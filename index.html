@@ -302,13 +302,26 @@
   .bullet-row{display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px dashed var(--line);}
   .bullet-row:last-of-type{border-bottom:none;}
   .bullet-triangle{color:var(--gold);font-size:11px;line-height:1.7;flex-shrink:0;margin-top:2px;}
-  .bullet-text{flex:1;font-size:13.5px;line-height:1.7;color:#3a4051;white-space:pre-line;}
+  .bullet-text{flex:1;min-width:0;font-size:13.5px;line-height:1.7;color:#3a4051;}
   .bullet-add{margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
   .bullet-row .del-btn{flex-shrink:0;font-size:13px;line-height:1.7;margin-top:2px;}
   .bullet-drag-handle{flex-shrink:0;cursor:grab;color:var(--muted);font-size:13px;line-height:1.7;margin-top:2px;user-select:none;}
   .bullet-drag-handle:active{cursor:grabbing;}
   .bullet-row.dragging{opacity:.4;}
   .bullet-row.drag-over{border-top:2px solid var(--gold);}
+  /* Listes à puces dans un bloc texte de point clé (voir bulletTextToHTML) — identiques en édition, affichage et PDF */
+  .bullet-text .bt-p{margin:0;}
+  .bullet-text .bt-list{list-style:none;margin:.2em 0;padding:0;}
+  .bullet-text .bt-list .bt-list{margin:0;}
+  .bullet-text > .bt-list:first-child{margin-top:0;}
+  .bullet-text > .bt-list:last-child{margin-bottom:0;}
+  .bullet-text .bt-list > li{position:relative;margin:0;padding-left:1.15em;}
+  .bullet-text ol.bt-list > li{padding-left:1.7em;}
+  .bullet-text .bt-list > li::before{position:absolute;left:0;top:0;content:"•";color:var(--gold);font-weight:700;}
+  .bullet-text .bt-list .bt-list > li::before{content:"◦";}
+  .bullet-text .bt-list .bt-list .bt-list > li::before{content:"▪";}
+  .bullet-text .bt-list > li.bt-arrow::before{content:"→" !important;font-weight:400;}
+  .bullet-text ol.bt-list > li::before{content:attr(data-n) !important;font-weight:600;font-variant-numeric:tabular-nums;}
 
   /* Rich Points-clés blocks (list/table/image/chart) */
   .bullet-toolbar{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;padding:8px;background:#f8f8fb;border:1px solid var(--line);border-radius:8px;}
@@ -2929,7 +2942,7 @@ function wireBulletBlockControls(c){
         setTimeout(()=>{
           const els = document.querySelectorAll(`[data-key="${CSS.escape(key)}"][data-field="bullet"]`);
           const last = els[els.length-1];
-          if(last){ last.focus(); selectAllText(last); }
+          if(last){ last.focus(); selectAllText(last.querySelector('[data-line]') || last); }
         }, 30);
       }
     };
@@ -2951,8 +2964,9 @@ function wireBulletBlockControls(c){
         showToast('Sélectionne du texte dans un point clé avant de cliquer.');
         return;
       }
-      const marker = el.getAttribute('data-fmt-btn') === 'bold' ? '**' : '*';
-      document.execCommand('insertText', false, marker + sel.toString() + marker);
+      // The field now shows real bold/italic while editing (bulletTextToHTML),
+      // and serializeBulletElement turns <b>/<i> back into **/* on save.
+      document.execCommand(el.getAttribute('data-fmt-btn') === 'bold' ? 'bold' : 'italic');
     });
   });
 
@@ -3343,7 +3357,7 @@ function renderBulletBlockHTML(it, block, i, editable){
     </div>`;
   }
   // text
-  return `<div class="bullet-text inline-edit" data-key="${key}" data-field="bullet" data-bullet-index="${i}" data-colorable="1" data-colorable-field="bullet-${i}" ${editable?ce():''} ${colorStyleAttr(it,'bullet-'+i)}>${editable ? escapeHtml(block.text||'') : renderTextMarkup(block.text||'')}</div>`;
+  return `<div class="bullet-text inline-edit" data-key="${key}" data-field="bullet" data-bullet-index="${i}" data-colorable="1" data-colorable-field="bullet-${i}" ${editable?ce():''} ${colorStyleAttr(it,'bullet-'+i)}>${bulletTextToHTML(block.text||'')}</div>`;
 }
 
 // ---------- Vue "changements de la semaine" ----------
@@ -5537,6 +5551,537 @@ function confirmDeleteContent(key){
   refreshData();
 }
 
+// ---------- Points clés texte : listes à puces + gras/italique (texte brut ⇄ HTML) ----------
+// A 'text' block is still stored as plain text in block.text (same
+// discipline as described above renderTextMarkup: never HTML), but its
+// lines now follow a tiny list syntax, on top of the existing **gras** /
+// *italique* markup:
+//   "- x" / "* x" / "• x" / "→ x"  → puce          "1. x" / "1) x" → numérotée
+//   two leading spaces per level    → sous-puce     any other line   → paragraphe
+// Fiches saved before this change already use exactly that shape (their
+// "→ …" sub-lines), so they render as lists with no migration.
+// Previously the text was shown with white-space:pre-line, so a "- " line was
+// just text (no hanging indent), edit mode showed the raw **markers** while
+// view mode rendered them, and Enter's execCommand('insertText','\n') is
+// turned by Chrome into separate <div> paragraphs inside the editable. Now
+// the SAME btLinesToHTML() output is used in view mode, edit mode and the PDF
+// export; the editable's DOM is read back into markup (<b> → **, <i> → *) by
+// serializeBulletElement, and every structural key (Enter, Tab,
+// Backspace/Delete at a line edge, paste, "- " autoformat) is applied to the
+// line model then re-rendered, never left to the browser's native handling.
+// Line texts in the model are markup; caret offsets are in visible characters.
+
+const BT_LINE_RE = /^([ \t]*)(?:([-*•])[ \t]+|(→)[ \t]*|(\d{1,3})([.)])[ \t]+)(.*)$/;
+
+function btEsc(s){
+  return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+function btMarkup(text){
+  return typeof renderTextMarkup === 'function' ? renderTextMarkup(text) : btEsc(text);
+}
+
+// Visible segments of one line of markup, exactly as renderTextMarkup shows them.
+function btSegments(markup){
+  const tpl = document.createElement('template');
+  tpl.innerHTML = btMarkup(markup || '');
+  const segs = [];
+  const walk = (node, b, i) => node.childNodes.forEach(c => {
+    if(c.nodeType === 3){ if(c.nodeValue) segs.push({ t: c.nodeValue, b, i }); return; }
+    if(c.nodeType === 1) walk(c, b || c.tagName === 'B', i || c.tagName === 'I');
+  });
+  walk(tpl.content, false, false);
+  return segs;
+}
+
+function btSegsToMarkup(segs){
+  const merged = [];
+  segs.forEach(s => {
+    const last = merged[merged.length - 1];
+    if(last && last.b === s.b && last.i === s.i) last.t += s.t; else merged.push({ ...s });
+  });
+  return merged.map(s => s.b ? `**${s.t}**` : s.i ? `*${s.t}*` : s.t).join('');
+}
+
+function btVisText(markup){ return btSegments(markup).map(s => s.t).join(''); }
+
+// Splits a line of markup at a visible-character offset, keeping formatting on both sides.
+function btSplitMarkup(markup, vis){
+  const before = [], after = [];
+  let pos = 0;
+  btSegments(markup).forEach(s => {
+    const cut = Math.max(0, Math.min(s.t.length, vis - pos));
+    if(cut > 0) before.push({ ...s, t: s.t.slice(0, cut) });
+    if(cut < s.t.length) after.push({ ...s, t: s.t.slice(cut) });
+    pos += s.t.length;
+  });
+  return [btSegsToMarkup(before), btSegsToMarkup(after)];
+}
+
+function btParseLine(raw){
+  const m = BT_LINE_RE.exec(raw);
+  if(!m) return { kind:'p', text: raw.trim() };
+  const indent = m[1].replace(/\t/g, '  ').length;
+  const level = Math.floor(indent / 2);
+  if(m[4] !== undefined){
+    return { kind:'li', level, ordered:true, num: parseInt(m[4], 10), delim: m[5], text: m[6].trim() };
+  }
+  return { kind:'li', level, ordered:false, marker: m[2] || m[3], text: m[6].trim() };
+}
+
+// A level can only go one deeper than the list item right above it, and a
+// list that follows a paragraph always starts at level 0.
+function btNormalize(lines){
+  let prevLevel = -1;
+  lines.forEach(l => {
+    if(l.kind !== 'li'){ prevLevel = -1; return; }
+    if(l.level > prevLevel + 1) l.level = prevLevel + 1;
+    if(l.level < 0) l.level = 0;
+    prevLevel = l.level;
+  });
+  while(lines.length && lines[0].kind === 'p' && !lines[0].text) lines.shift();
+  while(lines.length && lines[lines.length-1].kind === 'p' && !lines[lines.length-1].text) lines.pop();
+  return lines;
+}
+
+function parseBulletText(text){
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n').map(btParseLine);
+  return btNormalize(lines);
+}
+
+// Assigns the displayed/serialized number of every ordered item: a run of
+// ordered items at one level keeps counting across deeper sub-items, and
+// restarts (at its first item's own number) after anything else.
+function btNumber(lines){
+  let prev = []; // prev[level] = {ordered, n} of the last item seen at that level in the current run
+  lines.forEach(l => {
+    if(l.kind !== 'li'){ prev = []; return; }
+    prev.length = l.level + 1;
+    const p = prev[l.level];
+    if(l.ordered){
+      l.n = (p && p.ordered) ? p.n + 1 : (l.num || 1);
+      prev[l.level] = { ordered:true, n:l.n };
+    } else {
+      prev[l.level] = { ordered:false };
+    }
+  });
+  return lines;
+}
+
+function btSerialize(lines){
+  const clean = btNumber(btNormalize(lines.map(l => ({ ...l, text: (l.text || '').replace(/\s+/g, ' ').trim() }))));
+  return clean.map(l => {
+    if(l.kind !== 'li') return l.text;
+    const marker = l.ordered ? `${l.n}${l.delim || '.'}` : (l.marker || '-');
+    return '  '.repeat(l.level) + marker + ' ' + l.text;
+  }).join('\n');
+}
+
+// Both modes render through this, so edit and view are pixel-identical.
+function btLinesToHTML(lines){
+  btNumber(lines);
+  let out = '';
+  const stack = []; // open lists, stack[i] is the list at level i: 'ul' | 'ol'
+  const closeTo = depth => { while(stack.length > depth) out += `</li></${stack.pop()}>`; };
+  lines.forEach((l, i) => {
+    const content = l.text && btVisText(l.text).trim() ? btMarkup(l.text) : '<br>';
+    if(l.kind !== 'li'){
+      closeTo(0);
+      out += `<div class="bt-p" data-line="${i}">${content}</div>`;
+      return;
+    }
+    const tag = l.ordered ? 'ol' : 'ul';
+    closeTo(l.level + 1);
+    if(stack.length === l.level + 1 && stack[l.level] !== tag) closeTo(l.level);
+    if(stack.length === l.level + 1){
+      out += '</li>';
+    } else {
+      out += `<${tag} class="bt-list"${l.ordered ? ` data-start="${l.n}"` : ''}>`;
+      stack.push(tag);
+    }
+    const attrs = l.ordered
+      ? ` data-n="${l.n}${btEsc(l.delim || '.')}" data-d="${btEsc(l.delim || '.')}"`
+      : ` data-m="${btEsc(l.marker || '-')}"${l.marker === '→' ? ' class="bt-arrow"' : ''}`;
+    out += `<li data-line="${i}"${attrs}>${content}`;
+  });
+  closeTo(0);
+  return out;
+}
+
+function bulletTextToHTML(text){
+  return btLinesToHTML(parseBulletText(text));
+}
+
+// Same result as a save followed by a reload — used to skip no-op writes
+// when a legacy value only differs by whitespace.
+function normalizeBulletText(text){
+  return btSerialize(parseBulletText(text));
+}
+
+// ---- DOM → line model (tolerant of whatever native typing left behind) ----
+
+const BT_BLOCK_TAGS = new Set(['DIV','P','H1','H2','H3','H4','H5','H6','BLOCKQUOTE','PRE','SECTION']);
+
+function btNodeText(node){
+  if(node.nodeType === 3) return node.nodeValue;
+  if(node.nodeType !== 1 && node.nodeType !== 11) return ''; // 11 = DocumentFragment (caret offsets)
+  if(node.tagName === 'BR') return node.nextSibling ? ' ' : ''; // a trailing <br> is only the browser's empty-line placeholder
+  if(node.tagName === 'IMG') return node.getAttribute('alt') || '';
+  let s = '';
+  node.childNodes.forEach(c => { s += btNodeText(c); });
+  return BT_BLOCK_TAGS.has(node.tagName) ? ' ' + s + ' ' : s;
+}
+
+// Same walk as btNodeText, but keeps bold/italic as **/* markup (what gets saved).
+function btNodeMarkup(node){
+  if(node.nodeType === 3) return node.nodeValue;
+  if(node.nodeType !== 1 && node.nodeType !== 11) return '';
+  if(node.tagName === 'BR') return node.nextSibling ? ' ' : '';
+  if(node.tagName === 'IMG') return node.getAttribute('alt') || '';
+  let s = '';
+  node.childNodes.forEach(c => { s += btNodeMarkup(c); });
+  if(node.nodeType === 1){
+    const st = node.style || {};
+    const bold = node.tagName === 'B' || node.tagName === 'STRONG' || st.fontWeight === 'bold' || parseInt(st.fontWeight, 10) >= 600;
+    const italic = node.tagName === 'I' || node.tagName === 'EM' || st.fontStyle === 'italic';
+    const m = s.match(/^(\s*)(.*?)(\s*)$/s);
+    if(m[2] && bold) s = `${m[1]}**${m[2]}**${m[3]}`;
+    else if(m[2] && italic) s = `${m[1]}*${m[2]}*${m[3]}`;
+    if(BT_BLOCK_TAGS.has(node.tagName)) s = ' ' + s + ' ';
+  }
+  return s;
+}
+
+function btCleanText(s){
+  return s.replace(/[​﻿]/g, '').replace(/ /g, ' ');
+}
+
+function btReadList(listEl, level, lines, nodeMap){
+  let first = true;
+  listEl.childNodes.forEach(child => {
+    if(child.nodeType !== 1){
+      if(child.nodeType === 3 && child.nodeValue.trim()){
+        lines.push({ kind:'li', level, ordered: listEl.tagName === 'OL', marker:'-', delim:'.', text: btCleanText(child.nodeValue), el: null });
+      }
+      return;
+    }
+    if(child.tagName === 'UL' || child.tagName === 'OL'){ btReadList(child, level + 1, lines, nodeMap); return; }
+    const ordered = listEl.tagName === 'OL';
+    const line = {
+      kind:'li', level, ordered,
+      marker: child.dataset && child.dataset.m || '-',
+      delim: child.dataset && child.dataset.d || '.',
+      num: first && ordered ? (parseInt(listEl.getAttribute('data-start'), 10) || 1) : undefined,
+      text:'', el: child,
+    };
+    first = false;
+    lines.push(line);
+    child.childNodes.forEach(c => {
+      if(c.nodeType === 1 && (c.tagName === 'UL' || c.tagName === 'OL')) btReadList(c, level + 1, lines, nodeMap);
+      else line.text += btCleanText(btNodeMarkup(c));
+    });
+  });
+}
+
+function btReadBlock(container, lines, nodeMap, isRoot){
+  let cur = null;
+  const flush = () => { if(cur){ lines.push(cur); cur = null; } };
+  container.childNodes.forEach(child => {
+    if(child.nodeType === 1 && (child.tagName === 'UL' || child.tagName === 'OL')){
+      flush(); btReadList(child, 0, lines, nodeMap); return;
+    }
+    if(child.nodeType === 1 && BT_BLOCK_TAGS.has(child.tagName)){
+      flush();
+      const before = lines.length;
+      btReadBlock(child, lines, nodeMap, false);
+      if(lines.length === before) lines.push({ kind:'p', text:'', el: child });
+      else if(lines.length === before + 1 && lines[before].kind === 'p') lines[before].el = child;
+      return;
+    }
+    if(child.nodeType === 1 && child.tagName === 'BR'){
+      if(cur){ flush(); } else { lines.push({ kind:'p', text:'', el: null }); }
+      return;
+    }
+    if(!cur) cur = { kind:'p', text:'', el: null, nodes: [] };
+    cur.text += btCleanText(btNodeMarkup(child));
+    if(cur.nodes) cur.nodes.push(child);
+    if(isRoot) nodeMap.set(child, cur);
+  });
+  flush();
+}
+
+function btDomToLines(root){
+  const lines = [];
+  const nodeMap = new Map();
+  btReadBlock(root, lines, nodeMap, true);
+  return { lines, nodeMap };
+}
+
+function serializeBulletElement(root){
+  return btSerialize(btDomToLines(root).lines);
+}
+
+// ---- caret ⇄ (line index, offset) ----
+
+function btLineOfNode(root, node, lines, nodeMap){
+  const elIndex = new Map();
+  lines.forEach((l, i) => { if(l.el) elIndex.set(l.el, i); });
+  let n = node;
+  while(n && n !== root){
+    if(elIndex.has(n)) return { index: elIndex.get(n), start: n, startAtChild: false };
+    if(n.parentNode === root && nodeMap.has(n)){
+      const line = nodeMap.get(n);
+      return { index: lines.indexOf(line), start: line.nodes[0], startAtChild: true };
+    }
+    n = n.parentNode;
+  }
+  return null;
+}
+
+function btCaretPoint(root, container, offset, model){
+  const { lines, nodeMap } = model;
+  let node = container;
+  if(container === root){
+    // Caret between two direct children of the editable root.
+    const child = root.childNodes[offset] || root.childNodes[offset - 1];
+    if(!child) return lines.length ? { line: lines.length - 1, offset: btVisText(lines[lines.length-1].text).length } : { line: 0, offset: 0 };
+    const hit = btLineOfNode(root, child.nodeType === 1 && (child.tagName === 'UL' || child.tagName === 'OL') ? (child.querySelector('li') || child) : child, lines, nodeMap);
+    if(!hit) return { line: Math.max(0, lines.length - 1), offset: 0 };
+    return { line: hit.index, offset: root.childNodes[offset] ? 0 : btVisText(lines[hit.index].text).length };
+  }
+  const hit = btLineOfNode(root, node, lines, nodeMap);
+  if(!hit) return null;
+  const r = document.createRange();
+  if(hit.startAtChild) r.setStartBefore(hit.start); else r.setStart(hit.start, 0);
+  try{ r.setEnd(container, offset); }catch(e){ return { line: hit.index, offset: 0 }; }
+  const frag = r.cloneContents();
+  frag.querySelectorAll && frag.querySelectorAll('ul,ol').forEach(x => x.remove());
+  const len = btCleanText(btNodeText(frag)).length;
+  return { line: hit.index, offset: Math.min(len, btVisText(lines[hit.index].text).length) };
+}
+
+function btGetSelection(root, model){
+  const sel = window.getSelection();
+  if(!sel || !sel.rangeCount) return null;
+  const r = sel.getRangeAt(0);
+  if(!root.contains(r.startContainer) || !root.contains(r.endContainer)) return null;
+  const start = btCaretPoint(root, r.startContainer, r.startOffset, model);
+  const end = r.collapsed ? start : btCaretPoint(root, r.endContainer, r.endOffset, model);
+  if(!start || !end) return null;
+  return { start, end, collapsed: r.collapsed };
+}
+
+function btSetCaret(root, lineIdx, offset){
+  const el = root.querySelector(`[data-line="${lineIdx}"]`);
+  const sel = window.getSelection();
+  const r = document.createRange();
+  if(!el){ r.selectNodeContents(root); r.collapse(false); sel.removeAllRanges(); sel.addRange(r); return; }
+  // Text nodes of this line only — a <li>'s nested sub-list belongs to other lines.
+  const texts = [];
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let t;
+  while((t = walker.nextNode())){
+    if(el.tagName !== 'LI' || t.parentNode.closest('li') === el) texts.push(t);
+  }
+  let remaining = offset, placed = false;
+  for(const node of texts){
+    if(remaining <= node.nodeValue.length){ r.setStart(node, remaining); placed = true; break; }
+    remaining -= node.nodeValue.length;
+  }
+  if(!placed){
+    const last = texts[texts.length - 1];
+    if(last) r.setStart(last, last.nodeValue.length); else r.setStart(el, 0);
+  }
+  r.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(r);
+}
+
+function btRender(root, lines, caretLine, caretOffset){
+  const clean = lines.map(l => ({ kind:l.kind, level:l.level, ordered:l.ordered, marker:l.marker, delim:l.delim, num:l.num, text:l.text }));
+  // Keep an empty paragraph/item under the caret alive (btNormalize would trim it).
+  let prevLevel = -1;
+  clean.forEach(l => {
+    if(l.kind !== 'li'){ prevLevel = -1; return; }
+    if(l.level > prevLevel + 1) l.level = prevLevel + 1;
+    prevLevel = l.level;
+  });
+  if(!clean.length) clean.push({ kind:'p', text:'' });
+  root.innerHTML = btLinesToHTML(clean);
+  btSetCaret(root, Math.min(caretLine, clean.length - 1), caretOffset);
+}
+
+// ---- editing operations ----
+
+function btSubtreeEnd(lines, i){
+  // Index just past the contiguous deeper items that hang under lines[i].
+  let j = i + 1;
+  while(j < lines.length && lines[j].kind === 'li' && lines[j].level > lines[i].level) j++;
+  return j;
+}
+
+function btNewItemLike(l, text){
+  return { kind:'li', level:l.level, ordered:l.ordered, marker:l.marker, delim:l.delim, text };
+}
+
+function btHandleKeydown(e, root){
+  const isEnter = e.key === 'Enter';
+  const isTab = e.key === 'Tab';
+  const isBack = e.key === 'Backspace';
+  const isDel = e.key === 'Delete';
+  if(!(isEnter || isTab || isBack || isDel)) return false;
+  if(e.metaKey || e.ctrlKey || e.altKey) return false;
+
+  let model = btDomToLines(root);
+  let sel = btGetSelection(root, model);
+  if(!sel) return false;
+
+  if(isEnter){
+    e.preventDefault();
+    if(!sel.collapsed){ document.execCommand('delete'); model = btDomToLines(root); sel = btGetSelection(root, model); if(!sel) return true; }
+    const lines = model.lines;
+    if(!lines.length){ btRender(root, [{kind:'p',text:''},{kind:'p',text:''}], 1, 0); return true; }
+    const { line: i, offset: o } = sel.start;
+    const l = lines[i];
+    if(l.kind === 'li' && !btVisText(l.text).trim()){
+      // Enter on an empty item: step out one level, then out of the list.
+      if(l.level > 0){
+        const end = btSubtreeEnd(lines, i);
+        for(let k = i; k < end; k++) lines[k].level--;
+      } else {
+        lines[i] = { kind:'p', text:'' };
+      }
+      btRender(root, lines, i, 0);
+      return true;
+    }
+    const [before, after] = btSplitMarkup(l.text, o);
+    l.text = before;
+    const next = l.kind === 'li' ? btNewItemLike(l, after) : { kind:'p', text: after };
+    lines.splice(i + 1, 0, next);
+    btRender(root, lines, i + 1, 0);
+    return true;
+  }
+
+  if(isTab){
+    e.preventDefault();
+    const lines = model.lines;
+    const from = Math.min(sel.start.line, sel.end.line), to = Math.max(sel.start.line, sel.end.line);
+    let changed = false;
+    if(e.shiftKey){
+      for(let i = from; i <= to; i++){
+        const l = lines[i];
+        if(!l || l.kind !== 'li') continue;
+        if(l.level > 0){
+          const end = i === to ? btSubtreeEnd(lines, i) : i + 1;
+          for(let k = i; k < end; k++) if(lines[k].kind === 'li') lines[k].level--;
+        } else {
+          lines[i] = { kind:'p', text: l.text };
+        }
+        changed = true;
+      }
+    } else {
+      for(let i = from; i <= to; i++){
+        const l = lines[i];
+        if(!l || l.kind !== 'li') continue;
+        const prev = lines[i - 1];
+        if(!prev || prev.kind !== 'li' || prev.level < l.level) continue; // nothing to nest under
+        const end = i === to ? btSubtreeEnd(lines, i) : i + 1;
+        for(let k = i; k < end; k++) if(lines[k].kind === 'li') lines[k].level++;
+        changed = true;
+      }
+    }
+    if(changed) btRender(root, lines, sel.start.line, sel.start.offset);
+    return true;
+  }
+
+  if(!sel.collapsed) return false; // let the browser delete the selection
+  const lines = model.lines;
+  const { line: i, offset: o } = sel.start;
+  const l = lines[i];
+  if(!l) return false;
+
+  if(isBack && o === 0){
+    e.preventDefault();
+    if(l.kind === 'li'){
+      if(l.level > 0){
+        const end = btSubtreeEnd(lines, i);
+        for(let k = i; k < end; k++) lines[k].level--;
+      } else {
+        lines[i] = { kind:'p', text: l.text };
+      }
+      btRender(root, lines, i, 0);
+    } else if(i > 0){
+      const prev = lines[i - 1];
+      const at = btVisText(prev.text).length;
+      prev.text += l.text;
+      lines.splice(i, 1);
+      btRender(root, lines, i - 1, at);
+    }
+    return true;
+  }
+
+  if(isDel && o >= btVisText(l.text).length && i < lines.length - 1){
+    e.preventDefault();
+    const at = btVisText(l.text).length;
+    l.text += lines[i + 1].text;
+    lines.splice(i + 1, 1);
+    btRender(root, lines, i, at);
+    return true;
+  }
+  return false;
+}
+
+// "- " / "* " / "1. " typed at the very start of a paragraph starts a list.
+function btHandleInput(e, root){
+  if(e.inputType !== 'insertText' || !e.data || !/\s/.test(e.data.slice(-1))) return;
+  const model = btDomToLines(root);
+  const sel = btGetSelection(root, model);
+  if(!sel || !sel.collapsed) return;
+  const { line: i, offset: o } = sel.start;
+  const l = model.lines[i];
+  if(!l) return;
+  const head = btVisText(l.text).slice(0, o);
+  const m = /^(?:([-*•])|(\d{1,3})([.)]))\s$/.exec(head);
+  if(!m) return;
+  // In a paragraph this starts a list (top level); at the start of an
+  // existing item it switches that item between puce and numéro, same level.
+  if(l.kind === 'li' && !!m[2] === !!l.ordered) return;
+  const level = l.kind === 'li' ? l.level : 0;
+  const rest = btSplitMarkup(l.text, o)[1];
+  model.lines[i] = m[1]
+    ? { kind:'li', level, ordered:false, marker:m[1], text: rest }
+    : { kind:'li', level, ordered:true, num: parseInt(m[2], 10), delim:m[3], text: rest };
+  btRender(root, model.lines, i, 0);
+}
+
+// Plain-text paste: the first pasted line joins the current line, each
+// following one becomes its own line (a pasted "- x" line becomes an item).
+function btHandlePaste(e, root){
+  const text = (e.clipboardData || window.clipboardData).getData('text/plain').replace(/\r\n?/g, '\n');
+  e.preventDefault();
+  if(!text.includes('\n')){ document.execCommand('insertText', false, text); return; }
+  let model = btDomToLines(root);
+  let sel = btGetSelection(root, model);
+  if(sel && !sel.collapsed){ document.execCommand('delete'); model = btDomToLines(root); sel = btGetSelection(root, model); }
+  if(!sel){ document.execCommand('insertText', false, text.replace(/\n+/g, ' ')); return; }
+  const lines = model.lines.length ? model.lines : [{ kind:'p', text:'' }];
+  const { line: i, offset: o } = sel.start;
+  const l = lines[i];
+  const [before, after] = btSplitMarkup(l.text, o);
+  const pasted = text.split('\n');
+  l.text = before + pasted[0];
+  const extra = pasted.slice(1).map(raw => {
+    const pl = btParseLine(raw);
+    if(pl.kind === 'li') return pl;
+    return l.kind === 'li' ? btNewItemLike(l, pl.text) : pl;
+  });
+  lines.splice(i + 1, 0, ...extra);
+  const last = extra.length ? extra[extra.length - 1] : l;
+  const caretOffset = btVisText(last.text).length;
+  last.text += after;
+  btRender(root, lines, i + extra.length, caretOffset);
+}
+
 // ---------- INLINE EDIT COMMIT (no popups — click text/numbers directly, they save on blur) ----------
 
 document.addEventListener('focusout', (e) => {
@@ -5606,7 +6151,11 @@ document.addEventListener('focusout', (e) => {
   if(field === 'bullet'){
     const idx = parseInt(el.dataset.bulletIndex, 10);
     const current = obj.bullets && obj.bullets[idx];
-    if(current && current.type === 'text' && current.text !== raw){
+    // Read back through the list model (not innerText) so the saved markup is
+    // exactly what bulletTextToHTML renders again; a value that only differs
+    // by whitespace normalization is not rewritten.
+    const text = serializeBulletElement(el);
+    if(current && current.type === 'text' && normalizeBulletText(current.text) !== text){
       // Bounds-checked against the FRESH server array (read inside the
       // transaction below, not this tab's possibly-stale `obj.bullets`):
       // bullets are matched by array position, no stable id, so if another
@@ -5617,7 +6166,7 @@ document.addEventListener('focusout', (e) => {
       // write in that case instead.
       commitFieldEdit(key, o => {
         const block = Array.isArray(o.bullets) && o.bullets[idx];
-        if(block && block.type === 'text') block.text = raw;
+        if(block && block.type === 'text') block.text = text;
       });
     }
     return;
@@ -5660,6 +6209,7 @@ document.addEventListener('focusout', (e) => {
 document.addEventListener('input', (e) => {
   const el = e.target;
   if(!el.classList || !el.classList.contains('inline-edit')) return;
+  if(el.dataset.field === 'bullet'){ btHandleInput(e, el); return; }
   if(el.dataset.colorize){
     const raw = (el.innerText !== undefined ? el.innerText : el.textContent).trim().replace(',','.').replace('%','');
     const n = parseFloat(raw);
@@ -5683,6 +6233,7 @@ document.addEventListener('input', (e) => {
 document.addEventListener('paste', (e) => {
   const el = e.target;
   if(!el.classList || !el.classList.contains('inline-edit')) return;
+  if(el.dataset.field === 'bullet'){ btHandlePaste(e, el); return; }
   e.preventDefault();
   const text = (e.clipboardData || window.clipboardData).getData('text/plain').replace(/\r\n?/g, '\n');
   document.execCommand('insertText', false, text);
@@ -5691,19 +6242,11 @@ document.addEventListener('paste', (e) => {
 document.addEventListener('keydown', (e) => {
   const el = e.target;
   if(!el.classList || !el.classList.contains('inline-edit')) return;
-  if(e.key === 'Enter' && el.dataset.field === 'bullet'){
-    // Points clés is the one multi-line inline-edit field built on an inline
-    // element (a <span>/<div> flex item, not a <p> like description) —
-    // contenteditable's native "what does Enter insert" behavior is notorious
-    // for being inconsistent across browsers (a <div>, a <p>, a <br>, or
-    // nothing at all depending on the surrounding content model), and any of
-    // those can silently split part of the text out of the element the
-    // focusout handler reads from, dropping it. Forcing a plain "\n" text
-    // insertion via execCommand sidesteps that entirely — every browser
-    // inserts the exact same literal character, and it still goes through
-    // contenteditable's own undo stack (Ctrl+Z stays field-local).
-    e.preventDefault();
-    document.execCommand('insertText', false, '\n');
+  if(el.dataset.field === 'bullet'){
+    // Points clés texte: Enter/Tab/Backspace/Delete go through the list model
+    // (btHandleKeydown) instead of contenteditable's native handling, which
+    // splits the text into <div> paragraphs in Chrome.
+    btHandleKeydown(e, el);
     return;
   }
   // Enter commits single-line fields instead of inserting a newline (description/body stay multi-line)
