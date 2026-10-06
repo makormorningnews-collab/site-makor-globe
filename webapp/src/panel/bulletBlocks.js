@@ -31,6 +31,86 @@ export function appendMarkupText(container, text) {
   if (last < (text || '').length) container.appendChild(document.createTextNode(text.slice(last)));
 }
 
+// A text block's lines follow Morning News's list syntax (see
+// parseBulletText/btLinesToHTML in index.html), mirrored here:
+//   "- x" / "* x" / "• x" / "→ x"  → puce          "1. x" / "1) x" → numérotée
+//   two leading spaces per level    → sous-puce     any other line   → paragraphe
+// so the panel shows the same nested lists the editor shows, instead of the
+// raw lines under white-space:pre-line.
+const BT_LINE_RE = /^([ \t]*)(?:([-*•])[ \t]+|(→)[ \t]*|(\d{1,3})([.)])[ \t]+)(.*)$/;
+
+function parseBulletLine(raw) {
+  const m = BT_LINE_RE.exec(raw);
+  if (!m) return { kind: 'p', text: raw.trim() };
+  const level = Math.floor(m[1].replace(/\t/g, '  ').length / 2);
+  if (m[4] !== undefined) {
+    return { kind: 'li', level, ordered: true, num: parseInt(m[4], 10), delim: m[5], text: m[6].trim() };
+  }
+  return { kind: 'li', level, ordered: false, marker: m[2] || m[3], text: m[6].trim() };
+}
+
+export function parseBulletText(text) {
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n').map(parseBulletLine);
+  // A level can only go one deeper than the item right above it, and a list
+  // that follows a paragraph always starts at level 0.
+  let prevLevel = -1;
+  lines.forEach(l => {
+    if (l.kind !== 'li') { prevLevel = -1; return; }
+    if (l.level > prevLevel + 1) l.level = prevLevel + 1;
+    prevLevel = l.level;
+  });
+  while (lines.length && lines[0].kind === 'p' && !lines[0].text) lines.shift();
+  while (lines.length && lines[lines.length - 1].kind === 'p' && !lines[lines.length - 1].text) lines.pop();
+  // Ordered items keep counting across deeper sub-items and restart (at their
+  // first item's own number) after anything else.
+  let prev = [];
+  lines.forEach(l => {
+    if (l.kind !== 'li') { prev = []; return; }
+    prev.length = l.level + 1;
+    const p = prev[l.level];
+    if (l.ordered) {
+      l.n = p && p.ordered ? p.n + 1 : l.num || 1;
+      prev[l.level] = { ordered: true, n: l.n };
+    } else {
+      prev[l.level] = { ordered: false };
+    }
+  });
+  return lines;
+}
+
+function appendBulletText(container, text) {
+  const stack = []; // stack[level] = { list, li }
+  const fill = (el, lineText) => {
+    if (lineText) appendMarkupText(el, lineText);
+    else el.appendChild(document.createElement('br'));
+  };
+  parseBulletText(text).forEach(l => {
+    if (l.kind !== 'li') {
+      stack.length = 0;
+      const p = document.createElement('div');
+      p.className = 'bt-p';
+      fill(p, l.text);
+      container.appendChild(p);
+      return;
+    }
+    const tag = l.ordered ? 'OL' : 'UL';
+    stack.length = Math.min(stack.length, l.level + 1);
+    if (stack.length === l.level + 1 && stack[l.level].list.tagName !== tag) stack.length = l.level;
+    if (stack.length < l.level + 1) {
+      const list = document.createElement(tag);
+      list.className = 'bt-list';
+      (l.level === 0 ? container : stack[l.level - 1].li).appendChild(list);
+      stack.push({ list, li: null });
+    }
+    const li = document.createElement('li');
+    if (l.ordered) li.dataset.n = `${l.n}${l.delim || '.'}`;
+    else if (l.marker === '→') li.className = 'bt-arrow';
+    fill(li, l.text);
+    stack[l.level].list.appendChild(li);
+    stack[l.level].li = li;
+  });
+}
+
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const CHART_COLORS = ['#8a7cc0', '#1c8a4b', '#c0392b', '#b3a5e0', '#4a3a82'];
 
@@ -143,8 +223,8 @@ export function buildBulletBlockContentEl(block) {
     return wrap;
   }
   // text
-  const span = document.createElement('span');
-  span.className = 'panel-bullet-text';
-  appendMarkupText(span, block.text || '');
-  return span;
+  const div = document.createElement('div');
+  div.className = 'panel-bullet-text';
+  appendBulletText(div, block.text || '');
+  return div;
 }

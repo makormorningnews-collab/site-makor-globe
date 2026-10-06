@@ -39,10 +39,29 @@ describe('appendMarkupText', () => {
 });
 
 describe('buildBulletBlockContentEl', () => {
-  it('renders a text block as a .panel-bullet-text span', () => {
+  it('renders a text block as a .panel-bullet-text element', () => {
     const el = buildBulletBlockContentEl({ type: 'text', text: 'Hello' });
     expect(el.className).toBe('panel-bullet-text');
     expect(el.textContent).toBe('Hello');
+  });
+
+  it('renders "- " lines of a text block as a real list, one line per paragraph otherwise', () => {
+    const el = buildBulletBlockContentEl({ type: 'text', text: 'Intro **forte**\n- un\n- deux\nFin' });
+    const ps = el.querySelectorAll(':scope > .bt-p');
+    expect([...ps].map(p => p.textContent)).toEqual(['Intro forte', 'Fin']);
+    expect(ps[0].querySelector('b').textContent).toBe('forte');
+    const ul = el.querySelector(':scope > ul.bt-list');
+    expect([...ul.children].map(li => li.textContent)).toEqual(['un', 'deux']);
+  });
+
+  it('nests indented items and keeps → / numbered markers', () => {
+    const el = buildBulletBlockContentEl({ type: 'text', text: '1. a\n  → sub\n2. b\n3) c' });
+    const ol = el.querySelector(':scope > ol.bt-list');
+    expect(ol.children).toHaveLength(3);
+    expect([...ol.children].map(li => li.dataset.n)).toEqual(['1.', '2.', '3)']);
+    const sub = ol.children[0].querySelector('ul.bt-list > li');
+    expect(sub.className).toBe('bt-arrow');
+    expect(sub.textContent).toBe('sub');
   });
 
   it('renders a list block as a <ul> with one <li> per item', () => {

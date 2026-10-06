@@ -201,7 +201,41 @@
      and stat values, so this stays visually consistent while maximizing
      contrast for the bullet points specifically. */
   color: var(--text);
-  white-space: pre-line;
+  min-width: 0;
+}
+
+/* Bullet lists inside a text block (see appendBulletText in bulletBlocks.js) —
+   same look as Morning News's .bullet-text .bt-list. The li rules also undo
+   the flex row/padding/dashed border that .panel-company-bullets li would
+   otherwise apply to these nested items. */
+.panel-bullet-text .bt-p { margin: 0; }
+.panel-bullet-text .bt-list { list-style: none; margin: 0.2em 0; padding: 0; }
+.panel-bullet-text .bt-list .bt-list { margin: 0; }
+.panel-bullet-text > .bt-list:first-child { margin-top: 0; }
+.panel-bullet-text > .bt-list:last-child { margin-bottom: 0; }
+.panel-bullet-text .bt-list > li {
+  display: block;
+  position: relative;
+  margin: 0;
+  padding: 0 0 0 1.15em;
+  border-bottom: none;
+}
+.panel-bullet-text ol.bt-list > li { padding-left: 1.7em; }
+.panel-bullet-text .bt-list > li::before {
+  position: absolute;
+  left: 0;
+  top: 0;
+  content: "•";
+  color: var(--gold-light, #b3a5e0);
+  font-weight: 700;
+}
+.panel-bullet-text .bt-list .bt-list > li::before { content: "◦"; }
+.panel-bullet-text .bt-list .bt-list .bt-list > li::before { content: "▪"; }
+.panel-bullet-text .bt-list > li.bt-arrow::before { content: "→" !important; font-weight: 400; }
+.panel-bullet-text ol.bt-list > li::before {
+  content: attr(data-n) !important;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 /* A custom per-bullet color (item.colors['bullet-N'], read-only mode only) is
