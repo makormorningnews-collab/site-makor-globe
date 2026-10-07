@@ -3788,7 +3788,8 @@ function addPortfolioEntryInline(regionId){
   const key = `mkg:portfolio:${id}`;
   setItemLocal(key, item);
   refreshData();
-  refreshOnePortfolioEntry(key); // in case the ticker is already known (e.g. duplicated name), don't wait 5 min
+  // in case the ticker is already known (e.g. duplicated name), don't wait 5 min — once the row is saved
+  commitEditQueues.get(key).then(() => refreshOnePortfolioEntry(key));
   setTimeout(()=>{
     const el = document.querySelector(`[data-key="${CSS.escape(key)}"][data-field="entreprise"]`);
     if(el){ el.focus(); selectAllText(el); }
@@ -3872,7 +3873,10 @@ function syncPortfolioRowForCompany(companyKey){
   if(row.regionId !== regionId) patch.regionId = regionId;
   if(symbol && (!row.symbol || !row.symbol.trim() || row.symbol.trim() === 'SYMBOLE')) patch.symbol = symbol;
   if(Object.keys(patch).length){ commitFieldEdit(rowKey, o => Object.assign(o, patch)); changed = true; }
-  if(changed) refreshOnePortfolioEntry(rowKey);
+  // After this row's queued writes: on a just-created row, the quote merge
+  // (updateQuoteFieldsIfStillExists) would otherwise find no document yet and
+  // silently skip, leaving DEPUIS/YTD at 0 until the next 5-minute cycle.
+  if(changed) (commitEditQueues.get(rowKey) || Promise.resolve()).then(() => refreshOnePortfolioEntry(rowKey));
   return changed;
 }
 
