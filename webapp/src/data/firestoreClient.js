@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, getDocs, getDoc, doc, setDoc, deleteDoc, serverTimestamp, writeBatch, query, where, documentId, onSnapshot } from 'firebase/firestore';
+import { getFirestore, collection, getDocs, getDoc, doc, deleteDoc, serverTimestamp, writeBatch, runTransaction, query, where, documentId, onSnapshot } from 'firebase/firestore';
 
 const DEFAULT_CONFIG = {
   apiKey: 'AIzaSyAuzA0QqvpiHNb7FXgGa2oDOIua6Djv8wM',
@@ -36,6 +36,23 @@ export function docsToDb(docs) {
   return out;
 }
 
+// Portfolio rows (mkg:portfolio:*) carry a monotonic `gen` counter, and the
+// Firestore security rules (firestore.rules at the repo root) reject any
+// write to one whose `gen` isn't exactly current+1 — Morning News's guard
+// against stale tabs. Every write path below goes through
+// commitInTransaction() so these rows get that counter; a plain setDoc
+// without it is denied, which silently dropped every portfolio row (and,
+// in a batch, the company card created with it) this app tried to save.
+export function isPortfolioKey(key) {
+  return key.startsWith('mkg:portfolio:');
+}
+
+export function buildDocPayload(key, value, currentGen, timestamp) {
+  const payload = { value: JSON.stringify(value), updatedAt: timestamp };
+  if (isPortfolioKey(key)) payload.gen = (currentGen || 0) + 1;
+  return payload;
+}
+
 export async function writeWithRetry(writeFn, retries = WRITE_RETRY_COUNT, delayMs = WRITE_RETRY_DELAY_MS) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -69,11 +86,33 @@ export function createFirestoreClient(config = DEFAULT_CONFIG) {
     );
   }
 
-  async function writeDoc(key, value) {
-    await writeWithRetry(() => setDoc(doc(db, collectionForKey(key), key), {
-      value: JSON.stringify(value),
-      updatedAt: serverTimestamp(),
+  // All-or-nothing commit of sets and deletes. A transaction rather than a
+  // write batch because portfolio rows need their current `gen` read first
+  // (see buildDocPayload) — and if another tab bumps it before this commits,
+  // Firestore re-runs the callback with the fresh value instead of failing.
+  // Routes each key to its own collection, so a restore spanning mkg_data
+  // and mkg_pdfchunks stays atomic across both. Firestore caps a commit at
+  // 500 operations; a larger one rejects rather than half-applies.
+  async function commitInTransaction(writes, deletes) {
+    if (writes.length === 0 && deletes.length === 0) return;
+    await writeWithRetry(() => runTransaction(db, async transaction => {
+      const gens = new Map();
+      for (const [key] of writes) {
+        if (!isPortfolioKey(key)) continue;
+        const snap = await transaction.get(doc(db, collectionForKey(key), key));
+        gens.set(key, snap.exists() ? snap.data().gen || 0 : 0);
+      }
+      for (const [key, value] of writes) {
+        transaction.set(doc(db, collectionForKey(key), key), buildDocPayload(key, value, gens.get(key), serverTimestamp()));
+      }
+      for (const key of deletes) {
+        transaction.delete(doc(db, collectionForKey(key), key));
+      }
     }));
+  }
+
+  async function writeDoc(key, value) {
+    await commitInTransaction([[key, value]], []);
   }
 
   async function deleteDocByKey(key) {
@@ -92,43 +131,13 @@ export function createFirestoreClient(config = DEFAULT_CONFIG) {
   }
 
   async function writeDocsBatch(entries) {
-    if (entries.length === 0) return;
-    await writeWithRetry(async () => {
-      const batch = writeBatch(db);
-      for (const [key, value] of entries) {
-        batch.set(doc(db, collectionForKey(key), key), {
-          value: JSON.stringify(value),
-          updatedAt: serverTimestamp(),
-        });
-      }
-      await batch.commit();
-    });
+    await commitInTransaction(entries, []);
   }
 
-  // Single all-or-nothing commit combining sets and deletes. Used by the
-  // session-undo restore, where a partially-applied restore would leave the
-  // admin in a state that is neither "before" nor "after" — worse than
-  // failing outright. Routes each key to its own collection, so a restore
-  // spanning mkg_data and mkg_pdfchunks stays atomic across both.
-  //
-  // Firestore caps a batch at 500 operations; a session touching more than
-  // 500 documents will reject rather than half-apply. Deliberately not
-  // chunked — see the plan's Global Constraints.
+  // Used by the session-undo restore, where a partially-applied restore would
+  // leave the admin in a state that is neither "before" nor "after".
   async function applyBatch({ writes, deletes }) {
-    if (writes.length === 0 && deletes.length === 0) return;
-    await writeWithRetry(async () => {
-      const batch = writeBatch(db);
-      for (const [key, value] of writes) {
-        batch.set(doc(db, collectionForKey(key), key), {
-          value: JSON.stringify(value),
-          updatedAt: serverTimestamp(),
-        });
-      }
-      for (const key of deletes) {
-        batch.delete(doc(db, collectionForKey(key), key));
-      }
-      await batch.commit();
-    });
+    await commitInTransaction(writes, deletes);
   }
 
   async function fetchKeysWithPrefix(prefix) {

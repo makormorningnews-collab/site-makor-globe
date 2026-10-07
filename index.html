@@ -1222,7 +1222,13 @@ function setItemLocal(key, obj){
     undoStack.push({ key, prev: DB[key] !== undefined ? JSON.parse(JSON.stringify(DB[key])) : undefined });
   }
   DB[key] = obj;
-  rawSet(key, obj); // fire and forget — UI already reflects the change, this just persists it
+  // Fire and forget — UI already reflects the change, this just persists it.
+  // Queued behind (and ahead of) commitFieldEdit() writes to the same key: a
+  // field edited right after its row was created used to run its transaction
+  // before this create had landed, then this create's retry (gen race) wrote
+  // the placeholder object back over the edit.
+  const queued = (commitEditQueues.get(key) || Promise.resolve()).then(() => rawSet(key, obj));
+  commitEditQueues.set(key, queued);
 }
 
 // Commits a single field (or one bullet) edit WITHOUT stomping the rest of
@@ -3789,6 +3795,87 @@ function addPortfolioEntryInline(regionId){
   }, 30);
 }
 
+// ---------- Fiche entreprise → ligne du suivi de portefeuille (automatique) ----------
+// Every company card gets its own row in "Suivi des performances du
+// portefeuille", created as soon as the card has a real name and a known
+// region (a brand-new card is "Nouvelle entreprise" / "Autre" — no row yet,
+// otherwise the table would fill with placeholders). The row's id is stored
+// on the card (portfolioEntryId, same field the globe already uses), and later
+// renames / region / symbol changes on the card are mirrored onto that row.
+// Rows used to be added by hand with "+ Ajouter une position", so a card can
+// already have one: a row with the same name and the same presentation date,
+// not linked to another card, is adopted instead of creating a duplicate.
+// Cards created before this existed only ever adopt a matching row, never
+// create one: their hand-typed row names often differ slightly from the card
+// ("Duolingo Inc" vs "Duolingo Inc (SHORT)"), so editing an old card would
+// otherwise add a duplicate line.
+const PORTFOLIO_AUTO_ROW_SINCE = Date.parse('2026-10-07T00:00:00Z');
+
+function portfolioRegionIdForCompanyRegion(region){
+  const n = (region||'').toLowerCase().normalize('NFD').replace(/[^a-z]/g,'');
+  if(n.startsWith('asie') || n === 'asia') return 'asie';
+  if(n.includes('brics') || n === 'uk') return 'brics-uk';
+  if(n.includes('europe')) return 'europe';
+  if(n.includes('amerique') || n.includes('canada') || n === 'usa') return 'amerique-du-nord-canada';
+  return null;
+}
+
+function portfolioNameKey(name){
+  return (name||'').toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g,'');
+}
+
+// 'DD/MM' of the card's week presentation date (the format the DATE column uses).
+function companyPortfolioDate(companyKey){
+  const weekId = companyKey.split(':')[3];
+  const week = DB[`mkg:week:${weekId}`];
+  const iso = (week && (week.presentationDate || computeDefaultPresentationDateISO(week.label))) || '';
+  const m = /^\d{4}-(\d{2})-(\d{2})$/.exec(iso);
+  return m ? `${m[2]}/${m[1]}` : 'JJ/MM';
+}
+
+function syncPortfolioRowForCompany(companyKey){
+  const it = DB[companyKey];
+  if(!it) return false;
+  const name = (it.name||'').trim();
+  const regionId = portfolioRegionIdForCompanyRegion(it.region);
+  if(!name || name === 'Nouvelle entreprise' || !regionId) return false; // not ready yet
+  if(!loadPortfolioRegions().some(r => r.id === regionId)) return false;
+  let changed = false;
+  const symbol = (it.yahooSymbol && it.yahooSymbol.trim() !== 'SYMBOLE') ? it.yahooSymbol.trim() : '';
+
+  let rowKey = it.portfolioEntryId && DB[`mkg:portfolio:${it.portfolioEntryId}`] ? `mkg:portfolio:${it.portfolioEntryId}` : null;
+  if(!rowKey){
+    const date = companyPortfolioDate(companyKey);
+    const linkedIds = new Set(keysWithPrefix('mkg:content:entreprises:').map(k => DB[k] && DB[k].portfolioEntryId).filter(Boolean));
+    rowKey = keysWithPrefix('mkg:portfolio:').find(k => {
+      const e = DB[k];
+      return e && !linkedIds.has(e.id) && e.date === date && portfolioNameKey(e.entreprise) === portfolioNameKey(name);
+    }) || null;
+    if(!rowKey){
+      if(!(typeof it.createdAt === 'number' && it.createdAt >= PORTFOLIO_AUTO_ROW_SINCE)) return false;
+      const id = uid();
+      rowKey = `mkg:portfolio:${id}`;
+      setItemLocal(rowKey, { id, date, entreprise:name, stagiaire:'', symbol, regionId, depuis:0, ytd:0, createdAt: Date.now() });
+    }
+    const rowId = DB[rowKey].id || rowKey.slice('mkg:portfolio:'.length);
+    commitFieldEdit(companyKey, o => { o.portfolioEntryId = rowId; });
+    changed = true;
+  }
+
+  const row = DB[rowKey];
+  const patch = {};
+  // Only a real rename is mirrored — "ST Pharm" on the row vs "ST PHARM" on
+  // the card is the same company, the row keeps its own spelling. A symbol
+  // already typed on the row is never overwritten (it may track another
+  // listing on purpose), only filled in when missing.
+  if(portfolioNameKey(row.entreprise) !== portfolioNameKey(name)) patch.entreprise = name;
+  if(row.regionId !== regionId) patch.regionId = regionId;
+  if(symbol && (!row.symbol || !row.symbol.trim() || row.symbol.trim() === 'SYMBOLE')) patch.symbol = symbol;
+  if(Object.keys(patch).length){ commitFieldEdit(rowKey, o => Object.assign(o, patch)); changed = true; }
+  if(changed) refreshOnePortfolioEntry(rowKey);
+  return changed;
+}
+
 function confirmDeletePortfolioEntry(key){
   deleteItemLocal(key);
   showToast('Position supprimée');
@@ -6200,8 +6287,10 @@ document.addEventListener('focusout', (e) => {
     if(key.indexOf('mkg:portfolio:') === 0 && (field === 'entreprise' || field === 'date' || field === 'symbol')){
       refreshOnePortfolioEntry(key); // name/date just changed — try to resolve its ticker right away
     }
-    if(key.indexOf('mkg:content:entreprises:') === 0 && field === 'yahooSymbol'){
-      refreshData(); // re-render so the 📈 icon reflects the newly entered symbol right away
+    if(key.indexOf('mkg:content:entreprises:') === 0 && (field === 'name' || field === 'region' || field === 'yahooSymbol')){
+      const portfolioChanged = syncPortfolioRowForCompany(key);
+      // re-render so the 📈 icon / the portfolio table reflect the change right away
+      if(field === 'yahooSymbol' || portfolioChanged) refreshData();
     }
   }
 }, true);

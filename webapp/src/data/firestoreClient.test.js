@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { loadAllWithRetry, writeWithRetry, collectionForKey, docsToDb } from './firestoreClient.js';
+import { loadAllWithRetry, writeWithRetry, collectionForKey, docsToDb, buildDocPayload } from './firestoreClient.js';
 
 describe('docsToDb', () => {
   it('parses each document\'s JSON value into the output object, keyed by document id', () => {
@@ -93,5 +93,20 @@ describe('writeWithRetry', () => {
     const writeFn = vi.fn().mockRejectedValue(new Error('fail'));
     await expect(writeWithRetry(writeFn, undefined, 0)).rejects.toThrow();
     expect(writeFn).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('buildDocPayload', () => {
+  it('adds gen = current + 1 on portfolio rows, as the Firestore rules require', () => {
+    expect(buildDocPayload('mkg:portfolio:abc', { a: 1 }, 41, 'TS')).toEqual({ value: '{"a":1}', updatedAt: 'TS', gen: 42 });
+  });
+
+  it('starts a brand-new portfolio row at gen 1', () => {
+    expect(buildDocPayload('mkg:portfolio:abc', {}, undefined, 'TS').gen).toBe(1);
+  });
+
+  it('never adds gen to any other document', () => {
+    expect(buildDocPayload('mkg:content:entreprises:w1:x', { a: 1 }, 5, 'TS')).toEqual({ value: '{"a":1}', updatedAt: 'TS' });
+    expect(buildDocPayload('mkg:portfolio-region:asie', {}, 5, 'TS')).not.toHaveProperty('gen');
   });
 });
