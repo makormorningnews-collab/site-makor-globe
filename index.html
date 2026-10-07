@@ -1167,6 +1167,7 @@ async function updateQuoteFieldsIfStillExists(key, quote){
   if(quote.depuis !== undefined) merged.depuis = quote.depuis;
   if(quote.ytd !== undefined) merged.ytd = quote.ytd;
   DB[key] = merged; // this tab now matches the freshest data + the new quote
+  scheduleCacheSync(); // keep the localStorage snapshot in step, or a reload shows the old DEPUIS/YTD again
   if(merged.depuis === server.depuis && merged.ytd === server.ytd) return; // nothing to write
   // .update() (not .set()) so a row deleted between the read above and here is
   // NOT recreated. Explicit gen = current+1 to satisfy the security rules —
@@ -3600,8 +3601,33 @@ function portfolioEntrySymbol(e){
   return (e.symbol && e.symbol.trim()) || PORTFOLIO_TICKERS[e.entreprise] || null;
 }
 
+// Pulls the current server copy of every portfolio row into DB in one prefix
+// query. The page itself may have loaded from the 10-minute localStorage
+// snapshot (readDbCache), so DEPUIS/YTD written since then — by another tab,
+// the globe, or a quote fetched elsewhere — would otherwise stay invisible
+// here until that snapshot expired, while the globe (live listener) already
+// showed them. Only updates/adds rows: a row missing from the server is left
+// to the normal load path, so a row created here and not yet saved is never
+// dropped. A row with an unsaved edit pending in this tab is not touched.
+async function syncPortfolioRowsFromServer(){
+  const raw = await fetchRawPrefix('mkg:portfolio:');
+  if(!raw) return;
+  let changed = false;
+  Object.entries(raw).forEach(([key, value]) => {
+    if(pendingSyncFailures.has(key)) return;
+    let row;
+    try{ row = JSON.parse(value); }catch(e){ return; }
+    if(JSON.stringify(DB[key]) === JSON.stringify(row)) return;
+    DB[key] = row;
+    changed = true;
+  });
+  if(changed){ scheduleCacheSync(); refreshDataUnlessEditing(); }
+}
+
 async function refreshPortfolioQuotesOnce(){
   if(document.hidden) return; // backgrounded/minimized tab — skip this cycle, no point spending Firestore reads on a screen nobody's looking at
+  await syncPortfolioRowsFromServer();
+  if(state.activeCat !== 'entreprises') return;
   const entries = loadPortfolioEntries().filter(e => portfolioEntrySymbol(e));
   // Fetch once per unique (symbol, since-date): the global portfolio view holds
   // the same ticker many times over (long + short lines, the same name across
