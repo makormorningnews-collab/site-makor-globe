@@ -22,7 +22,7 @@ import './panel/brightnessMode.css';
 import { REGIONS } from './globe/regions.js';
 import { regionPosition } from './globe/cycle.js';
 import { initGlobeScene } from './globe/globeScene.js';
-import { createFirestoreClient, loadAllWithRetry } from './data/firestoreClient.js';
+import { createFirestoreClient } from './data/firestoreClient.js';
 import { getWeeks, getMarketItemsForWeekAndRegion, getNewsItemsForWeekAndRegion, getCompanyItemsForWeekAndRegion, getIaFintechItemsForWeek, getWeekContentKeys, getAllMarketItemsForWeek, getAllNewsItemsForWeek, getAllCompanyItemsForWeek, getAllCompaniesEverPresented, getPresentations } from './data/selectors.js';
 import { getPortfolioEntriesForRegion, getPortfolioRegion, PORTFOLIO_REGION_BY_GLOBE_REGION } from './data/portfolioSelectors.js';
 import { normalizeRegionLabel } from './data/regionMatch.js';
@@ -961,7 +961,35 @@ exportPortfolioPdfBtn.addEventListener('click', async () => {
 
 async function bootstrap() {
   try {
-    db = await loadAllWithRetry(() => client.loadAllOnce());
+    // The live listener's first snapshot IS the initial load. This used to
+    // be loadAllOnce() followed by subscribeToChanges(), but a new listener
+    // always starts by re-reading every document from the server, so each
+    // page load paid for the whole collection twice (~1,700 reads) —
+    // a big share of Firestore's 50k/day free read quota, whose exhaustion
+    // is what stopped edits from saving in Morning News.
+    db = await new Promise((resolve, reject) => {
+      let first = true;
+      client.subscribeToChanges(newDb => {
+        if (first) {
+          first = false;
+          resolve(newDb);
+          return;
+        }
+        // Keeps this tab in sync with edits made elsewhere (the old site is
+        // now the sole edit interface — see the "editer-redirect-old-site"
+        // plan) without requiring a manual reload. Later snapshots only
+        // arrive after the first render below has finished.
+        db = newDb;
+        if (weekTimelineHandle) weekTimelineHandle.setWeeks(getWeeks(db), activeWeekId);
+        renderPanelForCurrentSelection();
+      }, error => {
+        console.error('Firestore live sync error', error);
+        if (first) {
+          first = false;
+          reject(error);
+        }
+      });
+    });
 
     const weeks = getWeeks(db);
     activeWeekId = weeks.length ? weeks[weeks.length - 1].id : null;
@@ -977,17 +1005,6 @@ async function bootstrap() {
     });
 
     renderPanelForCurrentSelection();
-
-    // Keeps this tab in sync with edits made elsewhere (the old site is now
-    // the sole edit interface — see the "editer-redirect-old-site" plan)
-    // without requiring a manual reload. Attached only after the app has
-    // finished its first successful render, so an early snapshot can never
-    // race ahead of activeWeekId/weekTimelineHandle being ready.
-    client.subscribeToChanges(newDb => {
-      db = newDb;
-      if (weekTimelineHandle) weekTimelineHandle.setWeeks(getWeeks(db), activeWeekId);
-      renderPanelForCurrentSelection();
-    });
   } catch (error) {
     console.error('Failed to load Firestore data', error);
     panel.showRegion('Données indisponibles', { marketItems: [], newsItems: [] });

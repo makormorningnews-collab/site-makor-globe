@@ -1158,11 +1158,25 @@ async function rawDelete(key){
 //    since this tab loaded — the edit shows, then a refresh cycle from a stale
 //    tab overwrites it. Guard: merge ONLY depuis/ytd onto the CURRENT SERVER
 //    value, never touch the other fields.
+// Server copy (+ gen) of each portfolio row as read by this cycle's
+// syncPortfolioRowsFromServer(), so updateQuoteFieldsIfStillExists() doesn't
+// re-read every row one by one (~130 reads per 15-min cycle per open tab,
+// on top of the prefix query). Dropped for a key as soon as this tab writes
+// it (its gen moves on), which sends that row back to a fresh read.
+const portfolioServerState = new Map(); // key -> { row, gen }
+
 async function updateQuoteFieldsIfStillExists(key, quote){
-  const snap = await fsdb.collection(collectionForKey(key)).doc(key).get();
-  if(!snap.exists) return; // deleted elsewhere — leave it deleted, never recreate
-  let server;
-  try{ server = JSON.parse(snap.data().value); }catch(e){ return; }
+  let server, gen;
+  const known = portfolioServerState.get(key);
+  if(known){
+    server = known.row;
+    gen = known.gen;
+  } else {
+    const snap = await fsdb.collection(collectionForKey(key)).doc(key).get();
+    if(!snap.exists) return; // deleted elsewhere — leave it deleted, never recreate
+    try{ server = JSON.parse(snap.data().value); }catch(e){ return; }
+    gen = snap.data().gen || 0;
+  }
   const merged = { ...server };
   if(quote.depuis !== undefined) merged.depuis = quote.depuis;
   if(quote.ytd !== undefined) merged.ytd = quote.ytd;
@@ -1171,11 +1185,13 @@ async function updateQuoteFieldsIfStillExists(key, quote){
   if(merged.depuis === server.depuis && merged.ytd === server.ytd) return; // nothing to write
   // .update() (not .set()) so a row deleted between the read above and here is
   // NOT recreated. Explicit gen = current+1 to satisfy the security rules —
-  // see nextPortfolioGen().
+  // see nextPortfolioGen(); if the row changed since it was read, that gen is
+  // stale and the rules refuse the write, which is the intended outcome.
+  portfolioServerState.delete(key);
   fsdb.collection(collectionForKey(key)).doc(key).update({
     value: JSON.stringify(merged),
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-    gen: ((snap.data().gen) || 0) + 1
+    gen: gen + 1
   }).catch(()=>{
     // Silent: the doc was deleted between the read and the write, or this tab
     // lost a gen race with another writer — the next cycle retries.
@@ -1223,6 +1239,7 @@ function setItemLocal(key, obj){
     undoStack.push({ key, prev: DB[key] !== undefined ? JSON.parse(JSON.stringify(DB[key])) : undefined });
   }
   DB[key] = obj;
+  portfolioServerState.delete(key);
   // Fire and forget — UI already reflects the change, this just persists it.
   // Queued behind (and ahead of) commitFieldEdit() writes to the same key: a
   // field edited right after its row was created used to run its transaction
@@ -1265,6 +1282,7 @@ function setItemLocal(key, obj){
 // transactions from THIS tab back-to-back (e.g. quickly editing two bullets
 // on the same company) — a same-tab optimization, not what makes this safe.
 const commitEditQueues = new Map();
+let readQuotaExhaustedAt = 0; // last time a field-edit transaction hit the read quota, see commitFieldEdit
 function commitFieldEdit(key, apply){
   if(state.isEditing){
     undoStack.push({ key, prev: DB[key] !== undefined ? JSON.parse(JSON.stringify(DB[key])) : undefined });
@@ -1272,12 +1290,19 @@ function commitFieldEdit(key, apply){
   const local = DB[key] ? { ...DB[key] } : {};
   apply(local);
   DB[key] = local; // instant UI feedback, same as setItemLocal
+  portfolioServerState.delete(key);
 
   const isPortfolio = key.indexOf('mkg:portfolio:') === 0;
   const docRef = fsdb.collection(collectionForKey(key)).doc(key);
   const prevInQueue = commitEditQueues.get(key) || Promise.resolve();
   const thisWrite = prevInQueue.then(() => retryableWrite(key, async () => {
     let merged = null;
+    try{
+    // A transaction takes ~10 s to give up on an exhausted quota — skip
+    // straight to the fallback below for a while once that's been seen.
+    if(!isPortfolio && Date.now() - readQuotaExhaustedAt < 10*60*1000){
+      throw Object.assign(new Error('read quota exhausted (cached)'), { code:'resource-exhausted', cached:true });
+    }
     await fsdb.runTransaction(async (transaction) => {
       const snap = await transaction.get(docRef);
       let server = null;
@@ -1293,6 +1318,22 @@ function commitFieldEdit(key, apply){
       if(isPortfolio) payload.gen = existingGen + 1; // same convention as firestoreSet()/nextPortfolioGen()
       transaction.set(docRef, payload);
     });
+    }catch(e){
+      // Firestore's free daily READ quota (50k, resets 09:00 Paris) can run
+      // out while writes (separate 20k quota) still go through. The
+      // transaction above starts with a read, so once reads are exhausted
+      // EVERY field edit failed — a new card was created (plain set) but
+      // nothing typed into it afterwards was ever saved. Fall back to a plain
+      // write of this tab's copy with the edit applied: it can overwrite a
+      // field someone else changed on this same document since this tab
+      // loaded, which is far rarer than losing every edit until the next
+      // morning. Portfolio rows can't fall back (their gen needs a read).
+      if(!(e && e.code === 'resource-exhausted') || isPortfolio) throw e;
+      if(!e.cached) readQuotaExhaustedAt = Date.now();
+      merged = { ...(DB[key] || local) };
+      apply(merged);
+      await docRef.set({ value: JSON.stringify(merged), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    }
     DB[key] = merged; // this tab now matches the freshest data + our own edit
     scheduleCacheSync();
   }, '⚠️ Sauvegarde en ligne échouée — nouvelle tentative automatique...'));
@@ -3610,13 +3651,21 @@ function portfolioEntrySymbol(e){
 // to the normal load path, so a row created here and not yet saved is never
 // dropped. A row with an unsaved edit pending in this tab is not touched.
 async function syncPortfolioRowsFromServer(){
-  const raw = await fetchRawPrefix('mkg:portfolio:');
-  if(!raw) return;
+  portfolioServerState.clear();
+  let snap;
+  try{
+    snap = await fsdb.collection(MAIN_COLLECTION)
+      .where(firebase.firestore.FieldPath.documentId(), '>=', 'mkg:portfolio:')
+      .where(firebase.firestore.FieldPath.documentId(), '<', 'mkg:portfolio:\uf8ff')
+      .get();
+  }catch(e){ console.error('portfolio sync failed', e); return; }
   let changed = false;
-  Object.entries(raw).forEach(([key, value]) => {
-    if(pendingSyncFailures.has(key)) return;
+  snap.forEach(doc => {
+    const key = doc.id;
     let row;
-    try{ row = JSON.parse(value); }catch(e){ return; }
+    try{ row = JSON.parse(doc.data().value); }catch(e){ return; }
+    portfolioServerState.set(key, { row, gen: doc.data().gen || 0 });
+    if(pendingSyncFailures.has(key)) return;
     if(JSON.stringify(DB[key]) === JSON.stringify(row)) return;
     DB[key] = row;
     changed = true;

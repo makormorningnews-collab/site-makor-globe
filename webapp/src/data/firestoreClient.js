@@ -78,11 +78,11 @@ export function createFirestoreClient(config = DEFAULT_CONFIG) {
   // starting with the current state (fires once immediately, then again on
   // every subsequent change). Lets a save made on the old site propagate to
   // an already-open makor-globe tab without a manual reload.
-  function subscribeToChanges(onChange) {
+  function subscribeToChanges(onChange, onError = error => console.error('Firestore live sync error', error)) {
     return onSnapshot(
       collection(db, MAIN_COLLECTION),
       snapshot => onChange(docsToDb(snapshot.docs)),
-      error => console.error('Firestore live sync error', error),
+      onError,
     );
   }
 
