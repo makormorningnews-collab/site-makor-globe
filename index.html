@@ -3670,6 +3670,15 @@ async function syncPortfolioRowsFromServer(){
     DB[key] = row;
     changed = true;
   });
+  // Re-apply each linked card onto its row. syncPortfolioRowForCompany() only
+  // runs when a card's name/region/symbol is edited, so a row write that
+  // failed then (e.g. a rename while the Firestore read quota was exhausted —
+  // portfolio rows can't use commitFieldEdit's fallback) was never retried.
+  // Writes only when the row actually differs from its card.
+  keysWithPrefix('mkg:content:entreprises:').forEach(cardKey => {
+    const card = DB[cardKey];
+    if(card && card.portfolioEntryId && DB[`mkg:portfolio:${card.portfolioEntryId}`] && syncPortfolioRowForCompany(cardKey)) changed = true;
+  });
   if(changed){ scheduleCacheSync(); refreshDataUnlessEditing(); }
 }
 
@@ -3931,7 +3940,7 @@ function syncPortfolioRowForCompany(companyKey){
       if(!(typeof it.createdAt === 'number' && it.createdAt >= PORTFOLIO_AUTO_ROW_SINCE)) return false;
       const id = uid();
       rowKey = `mkg:portfolio:${id}`;
-      setItemLocal(rowKey, { id, date, entreprise:name, stagiaire:'', symbol, regionId, depuis:0, ytd:0, createdAt: Date.now() });
+      setItemLocal(rowKey, { id, date, entreprise:name, cardName:name, stagiaire:'', symbol, regionId, depuis:0, ytd:0, createdAt: Date.now() });
     }
     const rowId = DB[rowKey].id || rowKey.slice('mkg:portfolio:'.length);
     commitFieldEdit(companyKey, o => { o.portfolioEntryId = rowId; });
@@ -3944,9 +3953,19 @@ function syncPortfolioRowForCompany(companyKey){
   // the card is the same company, the row keeps its own spelling. A symbol
   // already typed on the row is never overwritten (it may track another
   // listing on purpose), only filled in when missing.
-  if(portfolioNameKey(row.entreprise) !== portfolioNameKey(name)) patch.entreprise = name;
+  // On a real rename the row's symbol follows the card's too (even when the
+  // card has none yet): the old one belongs to the previous company — e.g. a
+  // card renamed Oxford Instruments → COHORT PLC kept tracking OXIG.L.
+  // row.cardName = the card name last mirrored onto this row, so a rename
+  // typed directly in the table ("… (SHORT)") isn't undone by the periodic
+  // re-sync — only a change of the CARD's name is mirrored.
+  const lastCardName = row.cardName !== undefined ? row.cardName : row.entreprise;
+  const renamed = portfolioNameKey(lastCardName) !== portfolioNameKey(name);
+  if(renamed) patch.entreprise = name;
+  if(row.cardName !== name) patch.cardName = name;
   if(row.regionId !== regionId) patch.regionId = regionId;
-  if(symbol && (!row.symbol || !row.symbol.trim() || row.symbol.trim() === 'SYMBOLE')) patch.symbol = symbol;
+  if(renamed ? (row.symbol || '') !== symbol
+             : symbol && (!row.symbol || !row.symbol.trim() || row.symbol.trim() === 'SYMBOLE')) patch.symbol = symbol;
   if(Object.keys(patch).length){ commitFieldEdit(rowKey, o => Object.assign(o, patch)); changed = true; }
   // After this row's queued writes: on a just-created row, the quote merge
   // (updateQuoteFieldsIfStillExists) would otherwise find no document yet and
