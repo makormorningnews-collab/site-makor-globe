@@ -37,6 +37,19 @@ describe('sortPortfolioEntries', () => {
   });
 });
 
+describe('sortPortfolioEntries robustness', () => {
+  it('accepts DD/MM/YYYY and DD.MM, keeps blanks last in both directions, ties by createdAt', () => {
+    const rows = [
+      { id: 'blank', date: '' },
+      { id: 'oct-b', date: '07/10', createdAt: 2 },
+      { id: 'mar', date: '20.03' },
+      { id: 'oct-a', date: '07/10/2026', createdAt: 1 },
+    ];
+    expect(sortPortfolioEntries(rows, 'date', 'asc').map(e => e.id)).toEqual(['mar', 'oct-a', 'oct-b', 'blank']);
+    expect(sortPortfolioEntries(rows, 'date', 'desc').map(e => e.id)).toEqual(['oct-a', 'oct-b', 'mar', 'blank']);
+  });
+});
+
 describe('nextSort', () => {
   it('reverses direction when clicking the currently-sorted column', () => {
     expect(nextSort('date', 'asc', 'date')).toEqual({ field: 'date', direction: 'desc' });

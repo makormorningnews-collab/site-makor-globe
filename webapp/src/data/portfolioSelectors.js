@@ -1,3 +1,5 @@
+import { sortPortfolioEntries } from '../panel/portfolioSort.js';
+
 export const PORTFOLIO_REGION_BY_GLOBE_REGION = {
   asia: 'asie',
   'brics-uk': 'brics-uk',
@@ -8,10 +10,13 @@ export const PORTFOLIO_REGION_BY_GLOBE_REGION = {
 export function getPortfolioEntriesForRegion(db, regionId) {
   const portfolioRegionId = PORTFOLIO_REGION_BY_GLOBE_REGION[regionId];
   if (!portfolioRegionId) return [];
-  return Object.keys(db)
+  const entries = Object.keys(db)
     .filter(key => key.startsWith('mkg:portfolio:'))
     .map(key => db[key])
     .filter(entry => entry.regionId === portfolioRegionId);
+  // Chronological (oldest presentation first), like the on-screen table and
+  // Morning News — the PDF export uses this list as-is.
+  return sortPortfolioEntries(entries, 'date', 'asc');
 }
 
 export function getPortfolioRegion(db, regionId) {

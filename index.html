@@ -529,6 +529,16 @@
     .content-card p{ font-size:9.5px; line-height:1.35; margin:0 0 4px; }
 
     .card, .content-card, .company-card{ box-shadow:none; border:1px solid #ccc; }
+
+    /* Suivi du portefeuille à l'impression (Cmd+P) : une région par ligne,
+       en-tête répété, jamais une ligne coupée entre deux pages. */
+    .portfolio-grid{ grid-template-columns:1fr; gap:10px; }
+    .portfolio-region{ box-shadow:none; border:1px solid #ccc; padding:8px 10px; break-inside:auto; }
+    .portfolio-region-title{ break-after:avoid; }
+    .portfolio-table thead{ display:table-header-group; }
+    .portfolio-table tr{ break-inside:avoid; page-break-inside:avoid; }
+    .portfolio-table td{ font-size:10px; padding:3px 6px 3px 0; }
+    .region-export-btn, .portfolio-add-row, .portfolio-table td.del-btn{ display:none !important; }
   }
 
   .add-bar{margin-bottom:22px;display:flex;gap:10px;flex-wrap:wrap;}
@@ -2103,15 +2113,10 @@ async function generateCombinedReportPDF(sectionIds){
   if(sectionIds.includes('indices')) html += buildIndicesReportHTML(weekId);
   if(sectionIds.includes('news')) html += buildNewsReportHTML(weekId);
   if(sectionIds.includes('entreprises')) html += buildCompaniesReportHTML(weekId);
-  if(sectionIds.includes('portfolio')){
-    // Start the portfolio on a fresh page: its large table + section title
-    // otherwise leave the title stranded alone at the bottom of the previous
-    // page (orphan seen in the combined export).
-    if(html) html += '<div class="html2pdf__page-break" style="page-break-before:always;break-before:page;height:0;"></div>';
-    html += renderPortfolioSectionHTML();
-  }
+  // Le portefeuille est ajouté après coup en tableaux natifs (drawPortfolioPdf).
+  const portfolioGroups = sectionIds.includes('portfolio') ? portfolioRegionsForPdf() : [];
 
-  if(!html){ showToast('Aucune donnée à exporter pour cette sélection'); pdfExportInFlight = false; return; }
+  if(!html && portfolioGroups.length === 0){ showToast('Aucune donnée à exporter pour cette sélection'); pdfExportInFlight = false; return; }
 
   // html2canvas computes a 0px height (blank capture) for any detached element
   // taken out of normal document flow (position:fixed OR absolute, whether
@@ -2138,14 +2143,22 @@ async function generateCombinedReportPDF(sectionIds){
   const progress = openProgressPanel('Export PDF');
   progress.update({ step: 'Génération du document...' }); // html2pdf gives no step-level events — honestly indeterminate
   try{
-    await html2pdf().set({
-      margin: 8,
-      filename,
-      image: { type:'jpeg', quality:0.95 },
-      html2canvas: { scale:2, useCORS:true, backgroundColor:'#ffffff' },
-      jsPDF: { unit:'mm', format:'a4', orientation:'portrait' },
-      pagebreak: { mode:['css','legacy'] }
-    }).from(report).save();
+    if(portfolioGroups.length) await loadPdfTableLib();
+    let pdf;
+    if(html){
+      pdf = await html2pdf().set({
+        margin: 8,
+        filename,
+        image: { type:'jpeg', quality:0.95 },
+        html2canvas: { scale:2, useCORS:true, backgroundColor:'#ffffff' },
+        jsPDF: { unit:'mm', format:'a4', orientation:'portrait' },
+        pagebreak: { mode:['css','legacy'] }
+      }).from(report).toPdf().get('pdf');
+    } else {
+      pdf = new window.jspdf.jsPDF({ unit:'mm', format:'a4', orientation:'portrait' });
+    }
+    if(portfolioGroups.length) drawPortfolioPdf(pdf, portfolioGroups, { weekLabel: week ? week.label : '', newPage: !!html });
+    pdf.save(filename);
     progress.success('PDF téléchargé');
   }catch(err){
     console.error('PDF export failed', err);
@@ -2159,79 +2172,163 @@ async function generateCombinedReportPDF(sectionIds){
   }
 }
 
-// Exports one portfolio region as its own PDF by reusing the *same* container
-// element the full-page export already captures successfully — just with
-// every other top-level block and every other region hidden. (An earlier
-// version tried cloning the region into a freshly-appended, off-tree element,
-// but capturing something inserted a moment earlier can race the browser's
-// layout/paint cycle and produce a blank capture. Toggling visibility on
-// already-laid-out content sidesteps that entirely.)
-function exportPortfolioRegionAsPDF(regionId){
-  if(pdfExportInFlight){ showToast('Export déjà en cours...'); return; }
-  const container = document.getElementById('container');
-  const targetRegion = container.querySelector(`.portfolio-region[data-region-id="${CSS.escape(regionId)}"]`);
-  if(!targetRegion) return;
-  pdfExportInFlight = true;
+// ---------- Suivi du portefeuille en PDF : vrais tableaux vectoriels ----------
+// Le portefeuille n'est plus capturé en image (html2canvas) : les 4 régions
+// sortaient côte à côte en police minuscule, avec des lignes coupées aux sauts
+// de page. Il est dessiné ici en tableaux jsPDF natifs (jspdf-autotable, même
+// rendu que le PDF du globe) : une région pleine largeur après l'autre, ordre
+// chronologique, en-tête répété sur chaque page, aucune ligne coupée.
 
-  const header = document.querySelector('.header');
-  const weeksBar = document.getElementById('weeksBar');
-  const tabsBar = document.getElementById('tabsBar');
-  const addBars = container.querySelectorAll('.add-bar');
-  const hiddenChrome = [header, weeksBar, tabsBar, ...addBars].filter(Boolean);
-  const prevChromeDisplay = hiddenChrome.map(el => el.style.display);
-  hiddenChrome.forEach(el => el.style.display = 'none');
+let autoTableLoad = null;
+function loadPdfTableLib(){
+  const load = src => new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src; el.onload = resolve; el.onerror = () => reject(new Error('Chargement impossible : ' + src));
+    document.head.appendChild(el);
+  });
+  // autotable s'accroche à window.jspdf.jsPDF ; il s'applique ensuite aussi au
+  // document créé par html2pdf (même API jsPDF).
+  autoTableLoad = autoTableLoad || load('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
+    .then(() => load('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js'))
+    .catch(err => { autoTableLoad = null; throw err; });
+  return autoTableLoad;
+}
 
-  const topLevel = Array.from(container.children);
-  const prevTopDisplay = topLevel.map(el => el.style.display);
-  topLevel.forEach(el => { if(!el.contains(targetRegion)) el.style.display = 'none'; });
+// Les polices standard de jsPDF ne couvrent que le latin (CP1252) : on
+// remplace le reste plutôt que d'imprimer des caractères illisibles.
+function pdfSafe(text){
+  return String(text == null ? '' : text).normalize('NFC')
+    .replace(/[\u2212\u2010\u2011]/g, '-').replace(/[\u00a0\u202f]/g, ' ')
+    .replace(/[^\u0000-\u00ff\u2013\u2014\u2018\u2019\u201c\u201d\u2022\u2026\u20ac]/g, '');
+}
 
-  const allRegions = container.querySelectorAll('.portfolio-region');
-  const prevRegionDisplay = Array.from(allRegions).map(r => r.style.display);
-  allRegions.forEach(r => { if(r !== targetRegion) r.style.display = 'none'; });
+function hexToRgb(hex){
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex||'').trim());
+  if(!m) return [15, 23, 48];
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
 
-  const delBtns = container.querySelectorAll('.del-btn, .region-export-btn');
-  const prevDelDisplay = [];
-  delBtns.forEach(b => { prevDelDisplay.push(b.style.display); b.style.display = 'none'; });
-  const editables = container.querySelectorAll('[contenteditable]');
-  const prevContentEditable = [];
-  editables.forEach(b => { prevContentEditable.push(b.getAttribute('contenteditable')); b.removeAttribute('contenteditable'); });
-
-  container.classList.add('pdf-export');
-
+// Régions dans l'ordre d'affichage, chacune avec ses lignes en ordre
+// chronologique (loadPortfolioEntries), quel que soit le tri choisi à l'écran.
+function portfolioRegionsForPdf(onlyRegionId){
   const regions = loadPortfolioRegions();
-  const region = regions.find(r=>r.id===regionId);
+  const fallbackId = regions[0] ? regions[0].id : null;
+  const byId = {};
+  regions.forEach(r => byId[r.id] = []);
+  loadPortfolioEntries().forEach(e => {
+    const rid = byId[e.regionId] ? e.regionId : fallbackId;
+    if(rid) byId[rid].push(e);
+  });
+  return regions
+    .filter(r => !onlyRegionId || r.id === onlyRegionId)
+    .map(r => ({ region: r, entries: byId[r.id] }))
+    .filter(x => x.entries.length);
+}
+
+const PDF_MARGIN = 12;
+const PDF_NAVY = [15, 23, 48];
+const PDF_MUTED = [118, 124, 140];
+
+// Dessine le suivi du portefeuille dans `pdf` (A4 portrait, mm) à partir
+// d'une nouvelle page si `newPage`. Renvoie la première page utilisée.
+function drawPortfolioPdf(pdf, groups, { weekLabel, newPage }){
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  if(newPage) pdf.addPage();
+  const firstPage = pdf.internal.getNumberOfPages();
+  let y = PDF_MARGIN + 6;
+
+  pdf.setFont('times', 'bold'); pdf.setFontSize(18); pdf.setTextColor(...PDF_NAVY);
+  pdf.text(pdfSafe('Suivi des performances du portefeuille'), PDF_MARGIN, y);
+  if(weekLabel){
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9.5); pdf.setTextColor(...PDF_MUTED);
+    pdf.text(pdfSafe(weekLabel), pageW - PDF_MARGIN, y, { align: 'right' });
+  }
+  y += 3;
+  pdf.setDrawColor(201, 151, 31); pdf.setLineWidth(0.6);
+  pdf.line(PDF_MARGIN, y, pageW - PDF_MARGIN, y);
+  y += 8;
+
+  groups.forEach(({ region, entries }) => {
+    // titre + en-tête + 3 lignes doivent tenir, sinon la région démarre page suivante
+    if(y > pageH - PDF_MARGIN - 32){ pdf.addPage(); y = PDF_MARGIN + 6; }
+    const color = hexToRgb(region.color);
+    pdf.setFillColor(...color);
+    pdf.roundedRect(PDF_MARGIN, y - 3.6, 2.2, 5, 0.6, 0.6, 'F');
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11.5); pdf.setTextColor(...PDF_NAVY);
+    pdf.text(pdfSafe((region.label || '').toUpperCase()), PDF_MARGIN + 4.5, y);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8.5); pdf.setTextColor(...PDF_MUTED);
+    pdf.text(`${entries.length} position${entries.length > 1 ? 's' : ''}`, pageW - PDF_MARGIN, y, { align: 'right' });
+    y += 3;
+
+    const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+    window.jspdf.jsPDF.API.autoTable.call(pdf, {
+      startY: y,
+      margin: { left: PDF_MARGIN, right: PDF_MARGIN, top: PDF_MARGIN, bottom: PDF_MARGIN + 6 },
+      head: [['DATE', 'ENTREPRISE', 'STAGIAIRE', 'SYMBOLE', 'DEPUIS', 'YTD']],
+      body: entries.map(e => [
+        pdfSafe(e.date), pdfSafe(e.entreprise), pdfSafe(e.stagiaire), pdfSafe(e.symbol),
+        num(e.depuis) === null ? '' : fmtPct(num(e.depuis)),
+        num(e.ytd) === null ? '' : fmtPct(num(e.ytd)),
+      ]),
+      theme: 'striped',
+      showHead: 'everyPage',
+      rowPageBreak: 'avoid',
+      styles: { font: 'helvetica', fontSize: 9, lineWidth: 0, cellPadding: { top: 1.8, bottom: 1.8, left: 2.2, right: 2.2 }, textColor: PDF_NAVY, overflow: 'linebreak', valign: 'middle' },
+      headStyles: { fillColor: PDF_NAVY, textColor: [255, 255, 255], fontSize: 8, fontStyle: 'bold', lineWidth: 0 },
+      alternateRowStyles: { fillColor: [246, 247, 250] },
+      columnStyles: {
+        0: { cellWidth: 16, textColor: PDF_MUTED },
+        1: { fontStyle: 'bold' },
+        2: { cellWidth: 26, textColor: PDF_MUTED },
+        3: { cellWidth: 28, font: 'courier', fontSize: 8.5, textColor: PDF_MUTED },
+        4: { cellWidth: 22, halign: 'right', fontStyle: 'bold' },
+        5: { cellWidth: 22, halign: 'right', fontStyle: 'bold' },
+      },
+      didParseCell(data){
+        if(data.section === 'head' && data.column.index >= 4) data.cell.styles.halign = 'right';
+        if(data.section !== 'body' || data.column.index < 4) return;
+        const v = num(entries[data.row.index][data.column.index === 4 ? 'depuis' : 'ytd']);
+        if(v !== null) data.cell.styles.textColor = v >= 0 ? [28, 138, 75] : [192, 57, 43];
+      },
+    });
+    y = pdf.lastAutoTable.finalY + 10;
+  });
+
+  // pied de page sur les pages du portefeuille
+  const last = pdf.internal.getNumberOfPages();
+  for(let p = firstPage; p <= last; p++){
+    pdf.setPage(p);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(7.5); pdf.setTextColor(...PDF_MUTED);
+    pdf.text(pdfSafe(`Makor Morning News - Suivi du portefeuille${weekLabel ? ' - ' + weekLabel : ''}`), PDF_MARGIN, pageH - 6);
+    pdf.text(`${p - firstPage + 1} / ${last - firstPage + 1}`, pageW - PDF_MARGIN, pageH - 6, { align: 'right' });
+  }
+  return firstPage;
+}
+
+async function exportPortfolioRegionAsPDF(regionId){
+  if(pdfExportInFlight){ showToast('Export déjà en cours...'); return; }
+  const groups = portfolioRegionsForPdf(regionId);
+  if(groups.length === 0){ showToast('Aucune position dans cette région'); return; }
+  pdfExportInFlight = true;
   const week = state.weeks.find(w=>w.id===state.activeWeek);
   const safe = s => (s||'').replace(/[^a-zA-Z0-9]+/g,'_').replace(/^_+|_+$/g,'');
-  const filename = `Makor_Portefeuille_${safe(region?region.label:'region')}_${safe(week?week.label:'')}.pdf`;
-
-  const restore = () => {
-    hiddenChrome.forEach((el,i) => el.style.display = prevChromeDisplay[i]);
-    topLevel.forEach((el,i) => el.style.display = prevTopDisplay[i]);
-    allRegions.forEach((r,i) => r.style.display = prevRegionDisplay[i]);
-    delBtns.forEach((b,i) => b.style.display = prevDelDisplay[i]);
-    editables.forEach((b,i) => { if(prevContentEditable[i] !== null) b.setAttribute('contenteditable', prevContentEditable[i]); });
-    container.classList.remove('pdf-export');
-  };
-
+  const filename = `Makor_Portefeuille_${safe(groups[0].region.label)}_${safe(week?week.label:'')}.pdf`;
   const progress = openProgressPanel('Export PDF');
-  progress.update({ step: 'Génération du document...' }); // html2pdf gives no step-level events — honestly indeterminate
-  html2pdf().set({
-    margin: 8,
-    filename,
-    image: { type:'jpeg', quality:0.95 },
-    html2canvas: { scale:2, useCORS:true, backgroundColor:'#ffffff' },
-    jsPDF: { unit:'mm', format:'a4', orientation:'portrait' },
-    pagebreak: { mode:['css','legacy'] }
-  }).from(container).save().then(()=>{
-    restore();
+  progress.update({ step: 'Génération du document...' });
+  try{
+    await loadPdfTableLib();
+    const pdf = new window.jspdf.jsPDF({ unit:'mm', format:'a4', orientation:'portrait' });
+    drawPortfolioPdf(pdf, groups, { weekLabel: week ? week.label : '', newPage: false });
+    pdf.save(filename);
     progress.success('PDF téléchargé');
-  }).catch((err)=>{
+  }catch(err){
     console.error('PDF export failed', err);
-    restore();
     progress.error({ message: 'Échec de la génération du PDF', onRetry: () => exportPortfolioRegionAsPDF(regionId) });
-  }).finally(()=>{
+  }finally{
     pdfExportInFlight = false;
-  });
+  }
 }
 
 function wirePageActions(container, addBtnId, onAdd){

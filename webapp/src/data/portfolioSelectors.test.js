@@ -43,3 +43,14 @@ describe('getPortfolioRegion', () => {
     expect(getPortfolioRegion(DB, 'not-a-real-region')).toBeNull();
   });
 });
+
+describe('getPortfolioEntriesForRegion order', () => {
+  it('returns the region rows chronologically, whatever the key order', () => {
+    const db = {
+      'mkg:portfolio:zzz': { regionId: 'asie', entreprise: 'Mars', date: '20/03' },
+      'mkg:portfolio:aaa': { regionId: 'asie', entreprise: 'Oct', date: '07/10' },
+      'mkg:portfolio:mmm': { regionId: 'asie', entreprise: 'Juin', date: '12/06' },
+    };
+    expect(getPortfolioEntriesForRegion(db, 'asia').map(e => e.entreprise)).toEqual(['Mars', 'Juin', 'Oct']);
+  });
+});
