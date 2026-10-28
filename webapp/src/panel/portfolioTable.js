@@ -46,12 +46,21 @@ export function renderPortfolioTable(container, entries, { sortField, sortDirect
         td.textContent = raw === undefined || raw === null || raw === '' ? '' : `${raw}%`;
         if (raw !== undefined && raw !== null && raw !== '') {
           const num = Number(raw);
-          if (num > 0) td.classList.add('portfolio-cell-positive');
-          else if (num < 0) td.classList.add('portfolio-cell-negative');
+          // Short: the position gains when the price falls, so the colors flip.
+          const good = entry.isShort ? num < 0 : num > 0;
+          const bad = entry.isShort ? num > 0 : num < 0;
+          if (good) td.classList.add('portfolio-cell-positive');
+          else if (bad) td.classList.add('portfolio-cell-negative');
           // exactly zero: no class added, stays the default neutral color
         }
       } else {
         td.textContent = raw ?? '';
+        if (col.field === 'entreprise' && entry.isShort && !/short/i.test(raw || '')) {
+          const tag = document.createElement('span');
+          tag.className = 'portfolio-short-tag';
+          tag.textContent = 'SHORT';
+          td.appendChild(tag);
+        }
       }
       row.appendChild(td);
     }

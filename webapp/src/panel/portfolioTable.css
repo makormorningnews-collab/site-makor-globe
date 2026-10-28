@@ -121,3 +121,17 @@
 /* The fixed font-size/padding bumps that used to live here are gone — see
    the note in sidePanel.css. This table lives inside .side-panel, so
    presentationZoom.js's CSS `zoom` already scales it proportionally. */
+
+/* Short position marker next to the company name (colors of its DEPUIS/YTD
+   are inverted — see portfolioTable.js). */
+.portfolio-short-tag {
+  background: #c0392b;
+  border-radius: 3px;
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  margin-left: 6px;
+  padding: 1px 5px;
+  vertical-align: middle;
+}

@@ -407,6 +407,7 @@
   .portfolio-table td.num{text-align:right;font-weight:700;white-space:nowrap;}
   .portfolio-table .pf-date{color:var(--muted);font-size:11px;white-space:nowrap;}
   .portfolio-table .pf-name{font-weight:700;}
+  .portfolio-table .pf-short::after{content:"SHORT";display:inline-block;margin-left:6px;padding:1px 5px;border-radius:3px;background:#c0392b;color:#fff;font-size:8.5px;font-weight:800;letter-spacing:.05em;vertical-align:middle;}
   .portfolio-table .pf-stagiaire{color:var(--muted);font-size:11px;}
   .portfolio-table .pf-symbol{color:var(--muted);font-size:11px;font-family:monospace;}
   .portfolio-table tr:last-child td{border-bottom:none;}
@@ -2238,6 +2239,7 @@ function drawPortfolioPdf(pdf, groups, { weekLabel, newPage }){
   if(newPage) pdf.addPage();
   const firstPage = pdf.internal.getNumberOfPages();
   let y = PDF_MARGIN + 6;
+  const shortMatch = shortPortfolioIndex();
 
   pdf.setFont('times', 'bold'); pdf.setFontSize(18); pdf.setTextColor(...PDF_NAVY);
   pdf.text(pdfSafe('Suivi des performances du portefeuille'), PDF_MARGIN, y);
@@ -2263,12 +2265,13 @@ function drawPortfolioPdf(pdf, groups, { weekLabel, newPage }){
     y += 3;
 
     const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+    const shorts = entries.map(e => isShortPortfolioEntry(e, shortMatch));
     window.jspdf.jsPDF.API.autoTable.call(pdf, {
       startY: y,
       margin: { left: PDF_MARGIN, right: PDF_MARGIN, top: PDF_MARGIN, bottom: PDF_MARGIN + 6 },
       head: [['DATE', 'ENTREPRISE', 'STAGIAIRE', 'SYMBOLE', 'DEPUIS', 'YTD']],
-      body: entries.map(e => [
-        pdfSafe(e.date), pdfSafe(e.entreprise), pdfSafe(e.stagiaire), pdfSafe(e.symbol),
+      body: entries.map((e, i) => [
+        pdfSafe(e.date), pdfSafe(e.entreprise) + (shorts[i] && !/short/i.test(e.entreprise || '') ? ' (SHORT)' : ''), pdfSafe(e.stagiaire), pdfSafe(e.symbol),
         num(e.depuis) === null ? '' : fmtPct(num(e.depuis)),
         num(e.ytd) === null ? '' : fmtPct(num(e.ytd)),
       ]),
@@ -2290,7 +2293,7 @@ function drawPortfolioPdf(pdf, groups, { weekLabel, newPage }){
         if(data.section === 'head' && data.column.index >= 4) data.cell.styles.halign = 'right';
         if(data.section !== 'body' || data.column.index < 4) return;
         const v = num(entries[data.row.index][data.column.index === 4 ? 'depuis' : 'ytd']);
-        if(v !== null) data.cell.styles.textColor = v >= 0 ? [28, 138, 75] : [192, 57, 43];
+        if(v !== null) data.cell.styles.textColor = perfSign(v, shorts[data.row.index]) >= 0 ? [28, 138, 75] : [192, 57, 43];
       },
     });
     y = pdf.lastAutoTable.finalY + 10;
@@ -3866,6 +3869,32 @@ function loadPortfolioEntries(){
   return items;
 }
 
+// Une ligne du portefeuille est un SHORT si sa fiche liée (portfolioEntryId)
+// — ou, pour les lignes plus anciennes que ce lien, une fiche du même nom —
+// est en position Short, ou si « (short) » est écrit dans le nom. Pour un
+// short, une baisse du cours est un gain : DEPUIS/YTD s'affichent en vert
+// quand ils sont négatifs (les chiffres eux-mêmes ne changent pas).
+function shortPortfolioIndex(){
+  const ids = new Set(), names = new Set();
+  keysWithPrefix('mkg:content:entreprises:').forEach(k => {
+    const card = DB[k];
+    if(!card || normalizePosition(card.position) !== 'short') return;
+    if(card.portfolioEntryId) ids.add(card.portfolioEntryId);
+    if(card.name) names.add(String(card.name).trim().toLowerCase());
+  });
+  return { ids, names };
+}
+
+function isShortPortfolioEntry(e, index){
+  const id = (e.key || '').replace('mkg:portfolio:', '');
+  return index.ids.has(id)
+    || index.names.has(String(e.entreprise || '').trim().toLowerCase())
+    || /\(\s*short\s*\)/i.test(e.entreprise || '');
+}
+
+// Valeur dont le signe dit si la perf est bonne (>= 0) ou mauvaise.
+function perfSign(v, isShort){ return isShort ? -v : v; }
+
 function renderPortfolioSectionHTML(){
   const regions = loadPortfolioRegions();
   const entries = loadPortfolioEntries();
@@ -3877,6 +3906,7 @@ function renderPortfolioSectionHTML(){
     if(rid) byRegionId[rid].push(e);
   });
 
+  const shortMatch = shortPortfolioIndex();
   const sortField = state.portfolioSortField;
   const sortDir = state.portfolioSortDir || 1;
   if(sortField === 'date'){
@@ -3908,13 +3938,14 @@ function renderPortfolioSectionHTML(){
         </tr></thead>
         <tbody>`;
     byRegionId[region.id].forEach(e=>{
+      const isShort = isShortPortfolioEntry(e, shortMatch);
       html += `<tr>
         <td class="pf-date inline-edit" data-key="${e.key}" data-field="date" data-colorable="1" ${ce()} ${colorStyleAttr(e,'date')}>${escapeHtml(e.date||'')}</td>
-        <td class="pf-name inline-edit" data-key="${e.key}" data-field="entreprise" data-colorable="1" ${ce()} ${colorStyleAttr(e,'entreprise')}>${escapeHtml(e.entreprise||'')}</td>
+        <td class="pf-name inline-edit ${isShort && !/short/i.test(e.entreprise||'') ? 'pf-short' : ''}" data-key="${e.key}" data-field="entreprise" data-colorable="1" ${ce()} ${colorStyleAttr(e,'entreprise')}>${escapeHtml(e.entreprise||'')}</td>
         <td class="pf-stagiaire inline-edit" data-key="${e.key}" data-field="stagiaire" data-colorable="1" ${ce()} ${colorStyleAttr(e,'stagiaire')}>${escapeHtml(e.stagiaire||'')}</td>
         <td class="pf-symbol inline-edit" data-key="${e.key}" data-field="symbol" data-colorable="1" ${ce()} ${colorStyleAttr(e,'symbol')} title="Symbole Yahoo Finance (ex. AAPL, VIV.PA) — alimente l'actualisation auto ET la courbe 📈">${escapeHtml(e.symbol||'')}</td>
-        <td class="num ${pctClass(e.depuis||0)} inline-edit" data-key="${e.key}" data-field="depuis" data-type="number" data-colorize="1" data-colorable="1" data-colorable-fallback="${signHex(e.depuis||0)}" ${ce()} ${colorStyleAttr(e,'depuis')}>${fmtPct(e.depuis||0)}</td>
-        <td class="num ${pctClass(e.ytd||0)} inline-edit" data-key="${e.key}" data-field="ytd" data-type="number" data-colorize="1" data-colorable="1" data-colorable-fallback="${signHex(e.ytd||0)}" ${ce()} ${colorStyleAttr(e,'ytd')}>${fmtPct(e.ytd||0)}</td>
+        <td class="num ${pctClass(perfSign(e.depuis||0, isShort))} inline-edit" data-key="${e.key}" data-field="depuis" data-type="number" data-colorize="1" ${isShort?'data-colorize-invert="1"':''} data-colorable="1" data-colorable-fallback="${signHex(perfSign(e.depuis||0, isShort))}" ${ce()} ${colorStyleAttr(e,'depuis')}>${fmtPct(e.depuis||0)}</td>
+        <td class="num ${pctClass(perfSign(e.ytd||0, isShort))} inline-edit" data-key="${e.key}" data-field="ytd" data-type="number" data-colorize="1" ${isShort?'data-colorize-invert="1"':''} data-colorable="1" data-colorable-fallback="${signHex(perfSign(e.ytd||0, isShort))}" ${ce()} ${colorStyleAttr(e,'ytd')}>${fmtPct(e.ytd||0)}</td>
         ${state.isEditing ? `<td class="del-btn" data-del-portfolio="${e.key}">✕</td>` : `<td></td>`}
       </tr>`;
     });
@@ -6515,8 +6546,9 @@ document.addEventListener('input', (e) => {
     const raw = (el.innerText !== undefined ? el.innerText : el.textContent).trim().replace(',','.').replace('%','');
     const n = parseFloat(raw);
     if(!isNaN(n)){
+      const good = el.dataset.colorizeInvert ? n <= 0 : n >= 0;
       el.classList.remove('pos','neg');
-      el.classList.add(n >= 0 ? 'pos' : 'neg');
+      el.classList.add(good ? 'pos' : 'neg');
     }
   }
 });

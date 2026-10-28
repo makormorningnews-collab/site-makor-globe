@@ -54,3 +54,21 @@ describe('getPortfolioEntriesForRegion order', () => {
     expect(getPortfolioEntriesForRegion(db, 'asia').map(e => e.entreprise)).toEqual(['Mars', 'Juin', 'Oct']);
   });
 });
+
+describe('short portfolio rows', () => {
+  it('flags rows linked to a SHORT card, same-name SHORT cards, and "(short)" names — on copies only', () => {
+    const linked = { id: 'p1', regionId: 'asie', entreprise: 'Linked Co', date: '01/10' };
+    const db = {
+      'mkg:portfolio:p1': linked,
+      'mkg:portfolio:p2': { id: 'p2', regionId: 'asie', entreprise: 'Old Co', date: '02/10' },
+      'mkg:portfolio:p3': { id: 'p3', regionId: 'asie', entreprise: 'Adyen (short)', date: '03/10' },
+      'mkg:portfolio:p4': { id: 'p4', regionId: 'asie', entreprise: 'Long Co', date: '04/10' },
+      'mkg:content:entreprises:w1:c1': { name: 'Renamed', position: 'short', portfolioEntryId: 'p1' },
+      'mkg:content:entreprises:w1:c2': { name: 'Old Co', position: 'Short' },
+      'mkg:content:entreprises:w1:c3': { name: 'Long Co', position: 'long' },
+    };
+    const rows = getPortfolioEntriesForRegion(db, 'asia');
+    expect(rows.map(r => r.isShort)).toEqual([true, true, true, false]);
+    expect(linked.isShort).toBeUndefined();
+  });
+});

@@ -183,3 +183,16 @@ describe('editable portfolio table', () => {
     expect(onAddItem).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('renderPortfolioTable short rows', () => {
+  it('inverts DEPUIS/YTD colors and tags the name for a short row', () => {
+    const container = document.createElement('div');
+    renderPortfolioTable(container, [{ id: 's', date: '01/10', entreprise: 'Bear Co', depuis: -5, ytd: 3, isShort: true }], { sortField: 'date', sortDirection: 'asc', onSort: () => {} });
+    const cells = [...container.querySelectorAll('tbody td')];
+    const depuis = cells.find(td => td.textContent === '-5%');
+    const ytd = cells.find(td => td.textContent === '3%');
+    expect(depuis.classList.contains('portfolio-cell-positive')).toBe(true);
+    expect(ytd.classList.contains('portfolio-cell-negative')).toBe(true);
+    expect(container.querySelector('.portfolio-short-tag').textContent).toBe('SHORT');
+  });
+});

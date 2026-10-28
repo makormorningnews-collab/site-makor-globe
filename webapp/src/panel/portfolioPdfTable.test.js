@@ -92,3 +92,17 @@ describe('drawPortfolioTable', () => {
     expect(body[0][5]).toBe('');
   });
 });
+
+describe('drawPortfolioTable short rows', () => {
+  it('marks short rows and colors a falling price green', async () => {
+    const { drawPortfolioTable } = await import('./portfolioPdfTable.js');
+    const pdf = { addPage() {}, setFont() {}, setFontSize() {}, setTextColor() {}, text() {} };
+    const autoTableFn = vi.fn();
+    await drawPortfolioTable(pdf, [{ date: '01/10', entreprise: 'Bear Co', depuis: -5, ytd: 2, isShort: true }], '', { autoTableFn });
+    const opts = autoTableFn.mock.calls[0][1];
+    expect(opts.body[0][1]).toBe('Bear Co (SHORT)');
+    const cell = { styles: {} };
+    opts.didParseCell({ section: 'body', column: { index: 4 }, row: { index: 0 }, cell });
+    expect(cell.styles.textColor).toEqual([28, 138, 75]);
+  });
+});

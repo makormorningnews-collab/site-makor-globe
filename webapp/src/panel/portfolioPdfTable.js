@@ -18,8 +18,9 @@ function formatCell(raw, isPercent) {
   return isPercent ? `${raw}%` : safeText(raw);
 }
 
-function portfolioCellColor(value) {
-  const num = Number(value);
+// Short rows: a falling price is a gain, so the colors flip.
+function portfolioCellColor(value, isShort = false) {
+  const num = Number(isShort ? -value : value);
   if (num > 0) return POSITIVE_COLOR;
   if (num < 0) return NEGATIVE_COLOR;
   return null; // exactly zero: neutral, keep the default text color
@@ -49,7 +50,10 @@ export async function drawPortfolioTable(pdf, entries, regionLabel, { autoTableF
   autoTable(pdf, {
     startY,
     head: [PORTFOLIO_COLUMNS.map(([, label]) => label)],
-    body: entries.map(entry => PORTFOLIO_COLUMNS.map(([field], i) => formatCell(entry[field], PERCENT_COLUMN_INDEXES.has(i)))),
+    body: entries.map(entry => PORTFOLIO_COLUMNS.map(([field], i) => {
+      const cell = formatCell(entry[field], PERCENT_COLUMN_INDEXES.has(i));
+      return field === 'entreprise' && entry.isShort && !/short/i.test(cell) ? `${cell} (SHORT)` : cell;
+    })),
     theme: 'striped',
     styles: { fontSize: 10, cellPadding: 3.5, textColor: NAVY, lineColor: [228, 230, 236] },
     headStyles: { fillColor: NAVY, textColor: WHITE, fontSize: 9, fontStyle: 'bold' },
@@ -63,7 +67,7 @@ export async function drawPortfolioTable(pdf, entries, regionLabel, { autoTableF
     didParseCell(data) {
       if (data.section !== 'body' || !PERCENT_COLUMN_INDEXES.has(data.column.index)) return;
       const field = PORTFOLIO_COLUMNS[data.column.index][0];
-      const color = portfolioCellColor(entries[data.row.index][field]);
+      const color = portfolioCellColor(entries[data.row.index][field], entries[data.row.index].isShort);
       if (color) data.cell.styles.textColor = color;
     },
   });
