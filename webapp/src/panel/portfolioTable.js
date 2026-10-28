@@ -46,9 +46,12 @@ export function renderPortfolioTable(container, entries, { sortField, sortDirect
         td.textContent = raw === undefined || raw === null || raw === '' ? '' : `${raw}%`;
         if (raw !== undefined && raw !== null && raw !== '') {
           const num = Number(raw);
-          // Short: the position gains when the price falls, so the colors flip.
-          const good = entry.isShort ? num < 0 : num > 0;
-          const bad = entry.isShort ? num > 0 : num < 0;
+          // Short: the position gains when the price falls since the
+          // presentation, so DEPUIS colors flip. YTD is the stock's own
+          // performance and keeps the normal colors.
+          const invert = entry.isShort && col.field === 'depuis';
+          const good = invert ? num < 0 : num > 0;
+          const bad = invert ? num > 0 : num < 0;
           if (good) td.classList.add('portfolio-cell-positive');
           else if (bad) td.classList.add('portfolio-cell-negative');
           // exactly zero: no class added, stays the default neutral color

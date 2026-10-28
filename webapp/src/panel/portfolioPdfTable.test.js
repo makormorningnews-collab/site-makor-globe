@@ -104,5 +104,8 @@ describe('drawPortfolioTable short rows', () => {
     const cell = { styles: {} };
     opts.didParseCell({ section: 'body', column: { index: 4 }, row: { index: 0 }, cell });
     expect(cell.styles.textColor).toEqual([28, 138, 75]);
+    const ytdCell = { styles: {} };
+    opts.didParseCell({ section: 'body', column: { index: 5 }, row: { index: 0 }, cell: ytdCell });
+    expect(ytdCell.styles.textColor).toEqual([28, 138, 75]); // +2% YTD stays green
   });
 });

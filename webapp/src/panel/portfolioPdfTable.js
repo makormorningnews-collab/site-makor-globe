@@ -67,7 +67,8 @@ export async function drawPortfolioTable(pdf, entries, regionLabel, { autoTableF
     didParseCell(data) {
       if (data.section !== 'body' || !PERCENT_COLUMN_INDEXES.has(data.column.index)) return;
       const field = PORTFOLIO_COLUMNS[data.column.index][0];
-      const color = portfolioCellColor(entries[data.row.index][field], entries[data.row.index].isShort);
+      // Short rows: only DEPUIS (the position's performance) is inverted.
+      const color = portfolioCellColor(entries[data.row.index][field], field === 'depuis' && entries[data.row.index].isShort);
       if (color) data.cell.styles.textColor = color;
     },
   });

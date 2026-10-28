@@ -2293,7 +2293,9 @@ function drawPortfolioPdf(pdf, groups, { weekLabel, newPage }){
         if(data.section === 'head' && data.column.index >= 4) data.cell.styles.halign = 'right';
         if(data.section !== 'body' || data.column.index < 4) return;
         const v = num(entries[data.row.index][data.column.index === 4 ? 'depuis' : 'ytd']);
-        if(v !== null) data.cell.styles.textColor = perfSign(v, shorts[data.row.index]) >= 0 ? [28, 138, 75] : [192, 57, 43];
+        // short : seule DEPUIS (perf de la position) est inversée ; YTD reste la perf du titre
+        const s = data.column.index === 4 ? perfSign(v, shorts[data.row.index]) : v;
+        if(v !== null) data.cell.styles.textColor = s >= 0 ? [28, 138, 75] : [192, 57, 43];
       },
     });
     y = pdf.lastAutoTable.finalY + 10;
@@ -3872,8 +3874,9 @@ function loadPortfolioEntries(){
 // Une ligne du portefeuille est un SHORT si sa fiche liée (portfolioEntryId)
 // — ou, pour les lignes plus anciennes que ce lien, une fiche du même nom —
 // est en position Short, ou si « (short) » est écrit dans le nom. Pour un
-// short, une baisse du cours est un gain : DEPUIS/YTD s'affichent en vert
-// quand ils sont négatifs (les chiffres eux-mêmes ne changent pas).
+// short, une baisse du cours depuis la présentation est un gain : DEPUIS
+// s'affiche en vert quand il est négatif (les chiffres ne changent pas).
+// YTD garde les couleurs normales : c'est la perf du titre, pas du short.
 function shortPortfolioIndex(){
   const ids = new Set(), names = new Set();
   keysWithPrefix('mkg:content:entreprises:').forEach(k => {
@@ -3945,7 +3948,7 @@ function renderPortfolioSectionHTML(){
         <td class="pf-stagiaire inline-edit" data-key="${e.key}" data-field="stagiaire" data-colorable="1" ${ce()} ${colorStyleAttr(e,'stagiaire')}>${escapeHtml(e.stagiaire||'')}</td>
         <td class="pf-symbol inline-edit" data-key="${e.key}" data-field="symbol" data-colorable="1" ${ce()} ${colorStyleAttr(e,'symbol')} title="Symbole Yahoo Finance (ex. AAPL, VIV.PA) — alimente l'actualisation auto ET la courbe 📈">${escapeHtml(e.symbol||'')}</td>
         <td class="num ${pctClass(perfSign(e.depuis||0, isShort))} inline-edit" data-key="${e.key}" data-field="depuis" data-type="number" data-colorize="1" ${isShort?'data-colorize-invert="1"':''} data-colorable="1" data-colorable-fallback="${signHex(perfSign(e.depuis||0, isShort))}" ${ce()} ${colorStyleAttr(e,'depuis')}>${fmtPct(e.depuis||0)}</td>
-        <td class="num ${pctClass(perfSign(e.ytd||0, isShort))} inline-edit" data-key="${e.key}" data-field="ytd" data-type="number" data-colorize="1" ${isShort?'data-colorize-invert="1"':''} data-colorable="1" data-colorable-fallback="${signHex(perfSign(e.ytd||0, isShort))}" ${ce()} ${colorStyleAttr(e,'ytd')}>${fmtPct(e.ytd||0)}</td>
+        <td class="num ${pctClass(e.ytd||0)} inline-edit" data-key="${e.key}" data-field="ytd" data-type="number" data-colorize="1" data-colorable="1" data-colorable-fallback="${signHex(e.ytd||0)}" ${ce()} ${colorStyleAttr(e,'ytd')}>${fmtPct(e.ytd||0)}</td>
         ${state.isEditing ? `<td class="del-btn" data-del-portfolio="${e.key}">✕</td>` : `<td></td>`}
       </tr>`;
     });

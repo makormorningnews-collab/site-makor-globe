@@ -10,7 +10,8 @@ export const PORTFOLIO_REGION_BY_GLOBE_REGION = {
 // A portfolio row is a short when its linked company card (portfolioEntryId)
 // — or, for rows created before that link existed, a card with the same
 // name — is set to SHORT, or when "(short)" was typed in the name itself.
-// Short rows show DEPUIS/YTD with inverted colors (a falling price is green).
+// Short rows show DEPUIS with inverted colors (a falling price is green);
+// YTD keeps normal colors.
 export function shortPortfolioMatcher(db) {
   const shortIds = new Set();
   const shortNames = new Set();
