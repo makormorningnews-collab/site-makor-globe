@@ -6,17 +6,16 @@ import {
 import { safeText } from './pdfTextSanitize.js';
 import { isFlagSequence, flagImageUrl } from '../admin/flagImage.js';
 import { normalizeBulletBlock } from './bulletBlocks.js';
+import { normalizePosition, positionLabel } from './companyPosition.js';
 
 // This report draws text directly with jsPDF (no HTML/canvas step), so a
-// rich block can only become a plain string here — tables/lists collapse to
-// readable text, and images/charts (genuinely un-renderable in this simple
-// text-drawing path) become a named placeholder rather than "[object
-// Object]" or a crash. Full block rendering (image/chart included) is only
-// in Morning News's own HTML-based PDF export.
+// rich block becomes a plain string here. Tables are the exception: they're
+// drawn as real grids by drawBulletTable, never through this function.
+// Images/charts (un-renderable in this text-drawing path) become a named
+// placeholder rather than "[object Object]" or a crash.
 function blockToPdfText(rawBullet) {
   const block = normalizeBulletBlock(rawBullet);
   if (block.type === 'list') return (block.items || []).map(i => `- ${i}`).join('\n');
-  if (block.type === 'table') return (block.rows || []).map(r => r.join(' | ')).join('\n');
   if (block.type === 'image') return '[Image — voir la fiche entreprise]';
   if (block.type === 'chart') return '[Graphique — voir la fiche entreprise]';
   return (block.text || '').replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*([^*]+?)\*/g, '$1');
@@ -226,7 +225,26 @@ const STAT_FIELDS = [
   ['targetPriceLabel', 'targetPrice', 'Objectif'],
 ];
 
-function drawCompanies(pdf, companyItems, y, flagImages) {
+// A Points-clés table block, drawn as a real bordered grid (first row = header,
+// same as on screen) instead of "a | b | c" text lines.
+function drawBulletTable(pdf, autoTable, rows, y) {
+  const width = Math.max(...rows.map(r => r.length));
+  const pad = r => [...r, ...Array(width - r.length).fill('')].map(cell => safeText(cell));
+  autoTable(pdf, {
+    startY: y,
+    head: [pad(rows[0])],
+    body: rows.slice(1).map(pad),
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 1.8, textColor: BODY, lineColor: LINE, lineWidth: 0.2 },
+    headStyles: { fillColor: [248, 248, 251], textColor: NAVY, fontStyle: 'bold' },
+    margin: { left: MARGIN_SIDE_MM + 5, right: MARGIN_SIDE_MM, top: CONTENT_MARGIN_TOP_MM },
+    tableWidth: 'auto',
+  });
+  const finalY = pdf.lastAutoTable && pdf.lastAutoTable.finalY;
+  return (typeof finalY === 'number' ? finalY : y + rows.length * 6) + 4;
+}
+
+function drawCompanies(pdf, companyItems, y, flagImages, autoTable) {
   companyItems.forEach((item, index) => {
     if (index > 0) {
       y = ensureSpace(pdf, y, 8);
@@ -243,6 +261,13 @@ function drawCompanies(pdf, companyItems, y, flagImages) {
     pdf.setFontSize(13);
     pdf.setTextColor(...NAVY);
     pdf.text(safeText(item.name), MARGIN_SIDE_MM, y);
+    const position = normalizePosition(item.position);
+    if (position) {
+      const nameWidth = pdf.getTextWidth(safeText(item.name));
+      pdf.setFontSize(9);
+      pdf.setTextColor(...(position === 'long' ? POSITIVE : NEGATIVE));
+      pdf.text(positionLabel(position), MARGIN_SIDE_MM + nameWidth + 3, y);
+    }
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(9);
     pdf.setTextColor(...MUTED);
@@ -298,6 +323,15 @@ function drawCompanies(pdf, companyItems, y, flagImages) {
       pdf.setFontSize(9);
       pdf.setTextColor(...BODY);
       for (const bullet of item.bullets) {
+        const block = normalizeBulletBlock(bullet);
+        if (block.type === 'table' && (block.rows || []).length) {
+          y = ensureSpace(pdf, y, 6 * Math.min(block.rows.length, 4));
+          y = drawBulletTable(pdf, autoTable, block.rows, y - 3);
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(9);
+          pdf.setTextColor(...BODY);
+          continue;
+        }
         const lines = pdf.splitTextToSize(safeText(blockToPdfText(bullet)), USABLE_WIDTH_MM - 5);
         lines.forEach((line, li) => {
           y = ensureSpace(pdf, y, 4.5);
@@ -342,7 +376,9 @@ export async function generateReportPDF({
   }
   if (sections.includes('companies') && companyItems.length) {
     y = drawSectionLabel(pdf, 'Entreprises présentées', y);
-    y = drawCompanies(pdf, companyItems, y, flagImages);
+    const hasTable = companyItems.some(item => (item.bullets || []).some(b => normalizeBulletBlock(b).type === 'table'));
+    const autoTable = hasTable ? (autoTableFn || (await import('jspdf-autotable')).default) : null;
+    y = drawCompanies(pdf, companyItems, y, flagImages, autoTable);
   }
   if (sections.includes('portfolio') && portfolioEntries.length) {
     await drawPortfolioTable(pdf, portfolioEntries, portfolioRegionLabel, { autoTableFn });

@@ -1,19 +1,48 @@
-import { ddmmToISOThisYear } from '../data/dateUtils.js';
-
-export function companySymbol(item) {
-  return item.yahooSymbol || null;
+// The card's own symbol first, else its linked portfolio row's (same
+// precedence as Morning News's companySymbol).
+export function companySymbol(item, portfolioEntries = []) {
+  if (item.yahooSymbol && String(item.yahooSymbol).trim()) return String(item.yahooSymbol).trim();
+  const match = portfolioEntries.find(entry => entry.entreprise === item.name);
+  return (match && match.symbol && String(match.symbol).trim()) || null;
 }
 
-export function companyPresentationDateISO(item, portfolioEntries) {
-  const match = portfolioEntries.find(entry => entry.entreprise === item.name);
-  if (!match || !match.date) return null;
-  return ddmmToISOThisYear(match.date);
+// Ranges offered in the chart modal. Five years are fetched once and every
+// range is a slice of that, so switching ranges needs no new request.
+export const CHART_RANGES = [
+  { id: '1m', label: '1M', suffix: 'sur 1 mois' },
+  { id: '6m', label: '6M', suffix: 'sur 6 mois' },
+  { id: 'ytd', label: 'YTD', suffix: 'depuis le 1er janvier' },
+  { id: '1y', label: '1A', suffix: 'sur 1 an' },
+  { id: '5y', label: '5A', suffix: 'sur 5 ans' },
+];
+export const DEFAULT_CHART_RANGE = 'ytd';
+
+function isoDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+export function chartRangeStartISO(rangeId, today = new Date()) {
+  const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  if (rangeId === 'ytd') return `${d.getUTCFullYear()}-01-01`;
+  if (rangeId === '1m') d.setUTCMonth(d.getUTCMonth() - 1);
+  else if (rangeId === '6m') d.setUTCMonth(d.getUTCMonth() - 6);
+  else if (rangeId === '1y') d.setUTCFullYear(d.getUTCFullYear() - 1);
+  else d.setUTCFullYear(d.getUTCFullYear() - 5);
+  return isoDate(d);
+}
+
+// YTD is measured from the last close of the previous year (the usual
+// convention), so the slice keeps the last point before the start date.
+export function slicePointsFrom(points, startISO) {
+  const idx = points.findIndex(p => p.date >= startISO);
+  if (idx === -1) return [];
+  return points.slice(Math.max(idx - 1, 0));
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const CHART_WIDTH = 560;
 const CHART_HEIGHT = 260;
-const CHART_PAD_LEFT = 46;
+const CHART_PAD_LEFT = 62;
 const CHART_PAD_RIGHT = 16;
 const CHART_PAD_TOP = 16;
 const CHART_PAD_BOTTOM = 30;
@@ -26,6 +55,19 @@ function svgEl(tag, attrs) {
   const el = document.createElementNS(SVG_NS, tag);
   for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value);
   return el;
+}
+
+// x-axis label: day/month on short ranges, month/year once the series spans
+// more than a year (otherwise "03-14" repeats every year on the 5-year view).
+function xAxisLabel(dateISO, multiYear) {
+  const [y, m, d] = dateISO.split('-');
+  return multiYear ? `${m}/${y.slice(2)}` : `${d}/${m}`;
+}
+
+// Prices above 1,000 (e.g. 188,600 KRW) drop decimals and get thousands
+// separators, otherwise they overflow the y-axis gutter.
+export function formatChartPrice(value) {
+  return value >= 1000 ? Math.round(value).toLocaleString('fr-FR') : value.toFixed(2);
 }
 
 export function buildChartSVG(points, { width = CHART_WIDTH, height = CHART_HEIGHT } = {}) {
@@ -63,15 +105,16 @@ export function buildChartSVG(points, { width = CHART_WIDTH, height = CHART_HEIG
 
   for (const value of [max, mid, min]) {
     const label = svgEl('text', { x: CHART_PAD_LEFT - 8, y: (y(value) + 4).toFixed(1), 'font-size': 10, fill: CHART_LABEL_COLOR, 'text-anchor': 'end' });
-    label.textContent = value.toFixed(2);
+    label.textContent = formatChartPrice(value);
     svg.appendChild(label);
   }
 
+  const multiYear = (Date.parse(points[points.length - 1].date) - Date.parse(points[0].date)) > 400 * 86400000;
   const labelCount = Math.min(5, points.length);
   const labelIndexes = [...new Set(Array.from({ length: labelCount }, (_, k) => Math.round((k * (points.length - 1)) / Math.max(labelCount - 1, 1))))];
   for (const i of labelIndexes) {
     const label = svgEl('text', { x: x(i).toFixed(1), y: height - 8, 'font-size': 10, fill: CHART_LABEL_COLOR, 'text-anchor': 'middle' });
-    label.textContent = points[i].date.slice(5);
+    label.textContent = xAxisLabel(points[i].date, multiYear);
     svg.appendChild(label);
   }
 

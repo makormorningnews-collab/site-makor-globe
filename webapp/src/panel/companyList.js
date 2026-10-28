@@ -2,6 +2,7 @@ import { buildEditableInput } from '../admin/editableInput.js';
 import { buildColorDot } from '../admin/colorPicker.js';
 import { buildFlagImageEl, appendJoinedParts } from '../admin/flagImage.js';
 import { normalizeBulletBlock, buildBulletBlockContentEl } from './bulletBlocks.js';
+import { normalizePosition, positionLabel } from './companyPosition.js';
 
 const STAT_FIELDS = [
   ['salesGrowthLabel', 'salesGrowth', 'Croissance CA'],
@@ -112,6 +113,31 @@ function buildBulletsList(item, isEditing, { onBulletAdd, onBulletEdit, onBullet
   return bullets;
 }
 
+// LONG (green) / SHORT (red) badge at the top right of the card; a select in
+// edit mode. Always returns an element (an empty placeholder when unset) so
+// the header's layout doesn't shift between cards.
+function buildPositionEl(item, isEditing, { onEditItem }) {
+  const position = normalizePosition(item.position);
+  if (isEditing) {
+    const select = document.createElement('select');
+    select.className = 'panel-company-position-select';
+    select.setAttribute('aria-label', `Position ${item.name}`);
+    for (const [value, label] of [['', 'Position…'], ['long', 'Long'], ['short', 'Short']]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      if ((position || '') === value) option.selected = true;
+      select.appendChild(option);
+    }
+    select.addEventListener('change', () => onEditItem(item, { position: select.value }));
+    return select;
+  }
+  const badge = document.createElement('span');
+  badge.className = 'panel-company-position' + (position ? ` ${position}` : '');
+  badge.textContent = positionLabel(position);
+  return badge;
+}
+
 export function renderCompanies(container, items, selectedIds, { onToggle, onOpenChart, isEditing = false, onEditItem, onAddItem, onDeleteItem, onBulletAdd, onBulletEdit, onBulletDelete, onColorChange }) {
   container.replaceChildren();
   for (const item of items) {
@@ -152,7 +178,7 @@ export function renderCompanies(container, items, selectedIds, { onToggle, onOpe
     compareBtn.setAttribute('aria-label', `Comparer ${item.name}`);
     compareBtn.addEventListener('click', () => onToggle(item.id));
 
-    header.append(name, chartBtn, compareBtn);
+    header.append(name, chartBtn, compareBtn, buildPositionEl(item, isEditing, { onEditItem }));
 
     const sub = document.createElement('div');
     sub.className = 'panel-company-sub';

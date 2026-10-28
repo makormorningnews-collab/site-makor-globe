@@ -430,3 +430,28 @@ describe('renderCompanies — color picker', () => {
     expect(onColorChange).toHaveBeenCalledWith(colored, 'name', null);
   });
 });
+
+describe('renderCompanies LONG/SHORT badge', () => {
+  const noop = () => {};
+  it('shows a green LONG / red SHORT badge in the card header, nothing when unset', () => {
+    const container = document.createElement('div');
+    renderCompanies(container, [{ ...COMPANY_A, position: 'long' }, { ...COMPANY_B, position: 'Short' }, { ...COMPANY_B, id: 'c' }], [], { onToggle: noop, onOpenChart: noop });
+    const badges = [...container.querySelectorAll('.panel-company-header .panel-company-position')];
+    expect(badges.map(b => b.textContent)).toEqual(['LONG', 'SHORT', '']);
+    expect(badges[0].classList.contains('long')).toBe(true);
+    expect(badges[1].classList.contains('short')).toBe(true);
+  });
+
+  it('edits the position through a select in edit mode', () => {
+    const container = document.createElement('div');
+    const onEditItem = vi.fn();
+    renderCompanies(container, [COMPANY_A], [], {
+      onToggle: noop, onOpenChart: noop, isEditing: true, onEditItem, onAddItem: noop, onDeleteItem: noop,
+      onBulletAdd: noop, onBulletEdit: noop, onBulletDelete: noop, onColorChange: noop,
+    });
+    const select = container.querySelector('.panel-company-position-select');
+    select.value = 'short';
+    select.dispatchEvent(new Event('change'));
+    expect(onEditItem).toHaveBeenCalledWith(COMPANY_A, { position: 'short' });
+  });
+});

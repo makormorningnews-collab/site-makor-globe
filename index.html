@@ -235,6 +235,17 @@
   .company-cap{text-align:right;flex-shrink:0;}
   .company-cap .val{font-size:19px;font-weight:800;color:var(--navy);}
   .company-cap .lbl{font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.5px;}
+  /* LONG (vert) / SHORT (rouge), en haut à droite de chaque fiche — voir companyPositionHTML */
+  .position-badge{display:inline-block;font-size:11px;font-weight:800;letter-spacing:.08em;line-height:1;padding:5px 10px;border-radius:6px;color:#fff;margin-bottom:6px;}
+  .position-badge.long{background:#1c8a4b;}
+  .position-badge.short{background:#c0392b;}
+  .position-select{display:block;margin:0 0 6px auto;font-size:12px;font-family:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--text);}
+  .position-select.long{border-color:#1c8a4b;color:#1c8a4b;font-weight:700;}
+  .position-select.short{border-color:#c0392b;color:#c0392b;font-weight:700;}
+  .pdf-export .position-badge{font-size:8px;padding:3px 7px;margin-bottom:3px;}
+  .chart-range-bar{display:flex;gap:6px;margin:12px 0 10px;}
+  .chart-range-btn{background:#f2f3f7;border:1px solid var(--line);border-radius:6px;color:#5a6072;cursor:pointer;font-size:12px;font-weight:700;padding:4px 10px;font-family:inherit;}
+  .chart-range-btn.active{background:var(--navy);border-color:var(--navy);color:#fff;}
   .chart-icon-btn{
     display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
     border-radius:6px;cursor:pointer;font-size:14px;vertical-align:middle;margin-left:6px;
@@ -446,6 +457,8 @@
   .pdf-export .company-body{ font-size:9px; line-height:1.35; }
   .pdf-export .bullet-row{ padding:3px 0; }
   .pdf-export .bullet-text{ font-size:9px; line-height:1.35; }
+  .pdf-export .bullet-table-block{ font-size:8.5px; }
+  .pdf-export .bullet-table-block th, .pdf-export .bullet-table-block td{ padding:3px 6px; }
   .pdf-export .color-dot, .pdf-export .del-btn, .pdf-export .bullet-add, .pdf-export .bullet-drag-handle{ display:none !important; }
   .pdf-export .portfolio-section-title{ font-size:15px; margin:16px 0 8px; }
   .pdf-export .portfolio-section-title span{ display:none; }
@@ -1988,7 +2001,7 @@ function buildCompaniesReportHTML(weekId){
             <span>${escapeHtml(it.country||'')}</span>
           </div>
         </div>
-        <div class="company-cap"><div class="val" ${colorStyleAttr(it,'marketCap')}>${escapeHtml(it.marketCap||'—')}</div><div class="lbl">MARKET CAP</div></div>
+        <div class="company-cap">${companyPositionHTML(it, false)}<div class="val" ${colorStyleAttr(it,'marketCap')}>${escapeHtml(it.marketCap||'—')}</div><div class="lbl">MARKET CAP</div></div>
       </div>
       <span class="region-tag" style="background:${getCompanyRegionColors(it.region).bg};color:${getCompanyRegionColors(it.region).text};">${escapeHtml((it.region||'AUTRE').toUpperCase())}</span>
       <div class="company-stats">
@@ -2730,25 +2743,11 @@ function companyHasRealCreatedAt(it){
   return typeof it.createdAt === 'number' && it.createdAt > REAL_TIMESTAMP_FLOOR;
 }
 
-// Finds the portfolio row (if any) for a given company name — shared by both
-// the presentation-date lookup and the symbol lookup below.
+// Finds the portfolio row (if any) for a given company name — used by the
+// symbol lookup below.
 function matchingPortfolioEntry(companyName){
   const portfolioEntries = keysWithPrefix('mkg:portfolio:').map(k => DB[k]).filter(Boolean);
   return portfolioEntries.find(e => e.entreprise === companyName);
-}
-
-// Resolves the best-known "presentation date" for a company card:
-// 1) a matching row in the "Suivi des performances du portefeuille" table
-//    (same company name, valid DATE field) — this is manually entered by
-//    Harry and exists even for companies seeded long ago via OCR;
-// 2) otherwise, the card's own createdAt, but only if it's a real timestamp
-//    (not the old insertion-order counter used by seeded companies).
-// Returns an ISO 'YYYY-MM-DD' string, or null if neither is available.
-function companyPresentationDateISO(it){
-  const match = matchingPortfolioEntry(it.name);
-  if(match && portfolioSinceISODate(match.date)) return portfolioSinceISODate(match.date);
-  if(companyHasRealCreatedAt(it)) return isoDateFromMs(it.createdAt);
-  return null;
 }
 
 // Resolves the Yahoo symbol for a company card: the manually entered SYMBOLE
@@ -2762,17 +2761,29 @@ function companySymbol(it){
 }
 
 function companyChartIconHTML(it){
-  const symbol = companySymbol(it);
-  const sinceISO = companyPresentationDateISO(it);
-  if(symbol && sinceISO){
-    return `<span class="chart-icon-btn" data-chart-company="${escapeAttr(it.key)}" title="Évolution du cours depuis la présentation">📈</span>`;
+  if(companySymbol(it)){
+    return `<span class="chart-icon-btn" data-chart-company="${escapeAttr(it.key)}" title="Cours de l'action (YTD, 1 mois, 6 mois, 1 an, 5 ans)">📈</span>`;
   }
-  const reason = !symbol && !sinceISO
-    ? 'Symbole boursier et date de présentation non renseignés'
-    : !symbol
-      ? 'Symbole boursier non renseigné pour cette entreprise'
-      : "Date de présentation inconnue — ajoute une date (JJ/MM) dans le Suivi des performances du portefeuille pour cette entreprise";
-  return `<span class="chart-icon-btn disabled" title="${escapeAttr(reason)}">📈</span>`;
+  return `<span class="chart-icon-btn disabled" title="Symbole boursier non renseigné pour cette entreprise">📈</span>`;
+}
+
+// Sens de la position (champ `position` : 'long' | 'short'), affiché en haut
+// à droite de la fiche : badge vert/rouge en lecture, menu en mode édition.
+function normalizePosition(v){
+  const s = String(v || '').trim().toLowerCase();
+  return s === 'long' || s === 'short' ? s : '';
+}
+
+function companyPositionHTML(it, editable){
+  const pos = normalizePosition(it.position);
+  if(editable){
+    return `<select class="position-select ${pos}" data-position-key="${escapeAttr(it.key)}" title="Long ou short">
+      <option value="" ${pos===''?'selected':''}>Position…</option>
+      <option value="long" ${pos==='long'?'selected':''}>Long</option>
+      <option value="short" ${pos==='short'?'selected':''}>Short</option>
+    </select>`;
+  }
+  return pos ? `<div><span class="position-badge ${pos}">${pos.toUpperCase()}</span></div>` : '';
 }
 
 function growthClass(v){
@@ -2848,7 +2859,7 @@ function renderCompanies(){
               <span class="inline-edit" data-key="${it.key}" data-field="country" ${ce()}>${escapeHtml(it.country||'')}</span>
             </div>
           </div>
-          <div class="company-cap"><div class="val inline-edit" data-key="${it.key}" data-field="marketCap" data-colorable="1" ${ce()} ${colorStyleAttr(it,'marketCap')}>${escapeHtml(it.marketCap||'—')}</div><div class="lbl">MARKET CAP</div></div>
+          <div class="company-cap">${companyPositionHTML(it, state.isEditing)}<div class="val inline-edit" data-key="${it.key}" data-field="marketCap" data-colorable="1" ${ce()} ${colorStyleAttr(it,'marketCap')}>${escapeHtml(it.marketCap||'—')}</div><div class="lbl">MARKET CAP</div></div>
         </div>
         <span class="region-tag inline-edit" data-key="${it.key}" data-field="region" ${ce()} style="background:${getCompanyRegionColors(it.region).bg};color:${getCompanyRegionColors(it.region).text};">${escapeHtml((it.region||'AUTRE').toUpperCase())}</span>
         ${state.isEditing ? `<span class="color-dot" contenteditable="false" data-color-kind="companyRegionBg" data-color-region="${escapeAttr(it.region||'Autre')}" title="Couleur de fond" style="background:${getCompanyRegionColors(it.region).bg};"></span><span class="color-dot" contenteditable="false" data-color-kind="companyRegionText" data-color-region="${escapeAttr(it.region||'Autre')}" title="Couleur du texte" style="background:${getCompanyRegionColors(it.region).text};"></span>` : ''}
@@ -2892,6 +2903,12 @@ function renderCompanies(){
   });
   c.querySelectorAll('[data-chart-company]').forEach(el=>{
     el.onclick = (e) => { e.stopPropagation(); openCompanyChartModal(el.getAttribute('data-chart-company')); };
+  });
+  c.querySelectorAll('[data-position-key]').forEach(el=>{
+    el.onchange = () => {
+      commitFieldEdit(el.getAttribute('data-position-key'), o => { o.position = el.value; });
+      refreshData();
+    };
   });
   c.querySelectorAll('[data-compare-toggle]').forEach(el=>{
     el.onclick = (e) => { e.stopPropagation(); toggleCompareSelection(el.getAttribute('data-compare-toggle')); };
@@ -6461,8 +6478,14 @@ async function fetchQuoteHistory(symbol, sinceISO){
   }catch(e){ return { error: 'network: ' + (e && e.message || e) }; }
 }
 
+// Cours au-dessus de 1 000 (ex. 188 600 KRW) : sans décimales et avec
+// séparateur de milliers, sinon ils débordent de l'axe.
+function fmtChartPrice(v){
+  return v >= 1000 ? Math.round(v).toLocaleString('fr-FR') : v.toFixed(2);
+}
+
 function chartLineSVG(points){
-  const w = 560, h = 260, padL = 46, padR = 16, padT = 16, padB = 30;
+  const w = 560, h = 260, padL = 62, padR = 16, padT = 16, padB = 30;
   const closes = points.map(p => p.close);
   const min = Math.min(...closes), max = Math.max(...closes);
   const span = (max - min) || 1;
@@ -6479,13 +6502,16 @@ function chartLineSVG(points){
   // A handful of evenly spaced date labels along the x-axis (avoid crowding).
   const labelCount = Math.min(5, points.length);
   const labelIdxs = Array.from({length: labelCount}, (_, k) => Math.round(k * (points.length-1) / Math.max(labelCount-1,1)));
-  const xLabels = [...new Set(labelIdxs)].map(i => `<text x="${x(i).toFixed(1)}" y="${h-8}" font-size="10" fill="#8a90a6" text-anchor="middle">${points[i].date.slice(5)}</text>`).join('');
+  // jour/mois sur les plages courtes, mois/année au-delà d'un an (vue 5 ans)
+  const multiYear = (Date.parse(points[points.length-1].date) - Date.parse(points[0].date)) > 400 * 86400000;
+  const axisLabel = iso => { const [y, m, d] = iso.split('-'); return multiYear ? `${m}/${y.slice(2)}` : `${d}/${m}`; };
+  const xLabels = [...new Set(labelIdxs)].map(i => `<text x="${x(i).toFixed(1)}" y="${h-8}" font-size="10" fill="#8a90a6" text-anchor="middle">${axisLabel(points[i].date)}</text>`).join('');
 
   const yMidVal = (min + max) / 2;
   const yLabels = [
-    `<text x="${padL-8}" y="${y(max)+4}" font-size="10" fill="#8a90a6" text-anchor="end">${max.toFixed(2)}</text>`,
-    `<text x="${padL-8}" y="${y(yMidVal)+4}" font-size="10" fill="#8a90a6" text-anchor="end">${yMidVal.toFixed(2)}</text>`,
-    `<text x="${padL-8}" y="${y(min)+4}" font-size="10" fill="#8a90a6" text-anchor="end">${min.toFixed(2)}</text>`
+    `<text x="${padL-8}" y="${y(max)+4}" font-size="10" fill="#8a90a6" text-anchor="end">${fmtChartPrice(max)}</text>`,
+    `<text x="${padL-8}" y="${y(yMidVal)+4}" font-size="10" fill="#8a90a6" text-anchor="end">${fmtChartPrice(yMidVal)}</text>`,
+    `<text x="${padL-8}" y="${y(min)+4}" font-size="10" fill="#8a90a6" text-anchor="end">${fmtChartPrice(min)}</text>`
   ].join('');
 
   const gridLines = [max, yMidVal, min].map(v =>
@@ -6501,51 +6527,93 @@ function chartLineSVG(points){
   </svg>`;
 }
 
+// Plages proposées dans la fenêtre de la courbe. On charge 5 ans une seule
+// fois et chaque plage en est une tranche : changer de plage est instantané.
+const CHART_RANGES = [
+  {id:'1m', label:'1M', suffix:'sur 1 mois'},
+  {id:'6m', label:'6M', suffix:'sur 6 mois'},
+  {id:'ytd', label:'YTD', suffix:'depuis le 1er janvier'},
+  {id:'1y', label:'1A', suffix:'sur 1 an'},
+  {id:'5y', label:'5A', suffix:'sur 5 ans'},
+];
+
+function chartRangeStartISO(rangeId, today){
+  const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  if(rangeId === 'ytd') return `${d.getUTCFullYear()}-01-01`;
+  if(rangeId === '1m') d.setUTCMonth(d.getUTCMonth() - 1);
+  else if(rangeId === '6m') d.setUTCMonth(d.getUTCMonth() - 6);
+  else if(rangeId === '1y') d.setUTCFullYear(d.getUTCFullYear() - 1);
+  else d.setUTCFullYear(d.getUTCFullYear() - 5);
+  return d.toISOString().slice(0, 10);
+}
+
+// Garde le dernier cours avant le début de la plage comme base (YTD = depuis
+// la clôture de fin d'année précédente, la convention habituelle).
+function slicePointsFrom(points, startISO){
+  const idx = points.findIndex(p => p.date >= startISO);
+  return idx === -1 ? [] : points.slice(Math.max(idx - 1, 0));
+}
+
+let chartModalToken = 0;
 async function openCompanyChartModal(key){
   const it = DB[key];
   if(!it) return;
   const symbol = companySymbol(it);
-  const sinceISO = companyPresentationDateISO(it);
-  if(!symbol || !sinceISO) return; // icon shouldn't be clickable in this state, but guard anyway
+  if(!symbol) return; // icon isn't clickable in this state, but guard anyway
+  const token = ++chartModalToken;
+  const today = new Date();
+  let activeRange = 'ytd';
 
   const root = document.getElementById('modalRoot');
-  const sinceLabel = new Date(sinceISO + 'T00:00:00Z').toLocaleDateString('fr-FR', { day:'2-digit', month:'long', year:'numeric' });
-
   root.innerHTML = `
     <div class="modal-overlay chart-modal" id="chartOverlay">
       <div class="modal">
         <div class="chart-modal-header">
           <div>
             <h3>${escapeHtml(it.name)}</h3>
-            <div class="chart-modal-sub">Évolution depuis la présentation — ${escapeHtml(sinceLabel)} (${escapeHtml(symbol)})</div>
+            <div class="chart-modal-sub">Cours de l'action (${escapeHtml(symbol)})</div>
           </div>
           <span class="chart-icon-btn" id="chartCloseBtn" title="Fermer" style="background:#f2f3f7;color:#5a6072;">✕</span>
         </div>
+        <div class="chart-range-bar">${CHART_RANGES.map(r=>`<button type="button" class="chart-range-btn" data-range="${r.id}">${r.label}</button>`).join('')}</div>
         <div class="chart-svg-wrap" id="chartSvgWrap"><div class="chart-loading">Chargement de l'historique des cours...</div></div>
       </div>
     </div>`;
 
-  const close = () => root.innerHTML = '';
+  const close = () => { chartModalToken++; root.innerHTML = ''; };
   document.getElementById('chartCloseBtn').onclick = close;
   document.getElementById('chartOverlay').addEventListener('click', (e)=>{ if(e.target.id==='chartOverlay') close(); });
 
-  const data = await fetchQuoteHistory(symbol, sinceISO);
+  const data = await fetchQuoteHistory(symbol, chartRangeStartISO('5y', today));
   const wrap = document.getElementById('chartSvgWrap');
-  if(!wrap) return; // modal was closed while waiting
+  if(!wrap || token !== chartModalToken) return; // modal was closed (or reopened) while waiting
   if(!data || !data.points || data.points.length < 2){
     wrap.innerHTML = `<div class="chart-error">Historique indisponible pour le moment. Le symbole (${escapeHtml(symbol)}) est peut-être incorrect, ou la source de cours est temporairement inaccessible.</div>`;
     return;
   }
-  const first = data.points[0].close, last = data.points[data.points.length-1].close;
-  const changePct = ((last - first) / first) * 100;
-  const sign = changePct >= 0 ? '+' : '';
-  const changeColor = changePct >= 0 ? '#1c8a4b' : '#c0392b';
-  wrap.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
-      <div style="font-size:22px;font-weight:800;color:var(--navy);">${last.toFixed(2)}</div>
-      <div style="font-size:14px;font-weight:700;color:${changeColor};">${sign}${changePct.toFixed(2)}% depuis la présentation</div>
-    </div>
-    ${chartLineSVG(data.points)}`;
+
+  const buttons = root.querySelectorAll('.chart-range-btn');
+  const render = () => {
+    buttons.forEach(b => b.classList.toggle('active', b.dataset.range === activeRange));
+    const range = CHART_RANGES.find(r => r.id === activeRange);
+    const points = slicePointsFrom(data.points, chartRangeStartISO(activeRange, today));
+    if(points.length < 2){
+      wrap.innerHTML = `<div class="chart-error">Pas assez de cotations sur cette période.</div>`;
+      return;
+    }
+    const first = points[0].close, last = points[points.length-1].close;
+    const changePct = ((last - first) / first) * 100;
+    const sign = changePct >= 0 ? '+' : '';
+    const changeColor = changePct >= 0 ? '#1c8a4b' : '#c0392b';
+    wrap.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
+        <div style="font-size:22px;font-weight:800;color:var(--navy);">${fmtChartPrice(last)}</div>
+        <div style="font-size:14px;font-weight:700;color:${changeColor};">${sign}${changePct.toFixed(2)}% ${range.suffix}</div>
+      </div>
+      ${chartLineSVG(points)}`;
+  };
+  buttons.forEach(b => { b.onclick = () => { activeRange = b.dataset.range; render(); }; });
+  render();
 }
 
 function showPasswordModal(){

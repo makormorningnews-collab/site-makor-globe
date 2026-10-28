@@ -145,3 +145,23 @@ describe('generateReportPDF', () => {
     expect(pdf.save).not.toHaveBeenCalled();
   });
 });
+
+describe('generateReportPDF company tables and position', () => {
+  it('draws a Points-clés table block as a real table (autoTable), not "a | b" text', async () => {
+    const opts = baseOptions();
+    const items = [{ ...COMPANY_ITEMS[0], bullets: [{ type: 'table', rows: [['', 'CA', 'EBITDA'], ['2025', '605 M$', '135 M$']] }] }];
+    await generateReportPDF({ regionLabel: 'E', weekLabel: 'W', companyItems: items, sections: ['companies'] }, 't.pdf', opts);
+    expect(opts.autoTableFn).toHaveBeenCalledWith(opts.pdf, expect.objectContaining({
+      head: [['', 'CA', 'EBITDA']],
+      body: [['2025', '605 M$', '135 M$']],
+    }));
+    expect(opts.pdf.text).not.toHaveBeenCalledWith(expect.stringContaining('|'), expect.anything(), expect.anything());
+  });
+
+  it('writes LONG / SHORT next to the company name', async () => {
+    const opts = baseOptions();
+    await generateReportPDF({ regionLabel: 'E', weekLabel: 'W', companyItems: [{ ...COMPANY_ITEMS[0], position: 'short' }], sections: ['companies'] }, 't.pdf', opts);
+    expect(opts.pdf.text).toHaveBeenCalledWith('SHORT', expect.any(Number), expect.any(Number));
+    expect(opts.pdf.setTextColor).toHaveBeenCalledWith(192, 57, 43);
+  });
+});

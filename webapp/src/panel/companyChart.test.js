@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
-import { companySymbol, companyPresentationDateISO, buildChartSVG } from './companyChart.js';
+import { companySymbol, buildChartSVG, chartRangeStartISO, slicePointsFrom } from './companyChart.js';
 
 describe('companySymbol', () => {
   it('returns the yahooSymbol field when present', () => {
@@ -16,28 +16,26 @@ describe('companySymbol', () => {
   });
 });
 
-describe('companyPresentationDateISO', () => {
-  const CURRENT_YEAR = new Date().getFullYear();
-  const PORTFOLIO_ENTRIES = [
-    { entreprise: 'Evergreen Marine', date: '16/07' },
-    { entreprise: 'Geely Automobile Holdings Ltd', date: 'n/a' },
-  ];
+describe('companySymbol portfolio fallback', () => {
+  it('uses the matching portfolio row symbol when the card has none', () => {
+    expect(companySymbol({ name: 'Cohort' }, [{ entreprise: 'Cohort', symbol: 'CHRT.L' }])).toBe('CHRT.L');
+  });
+});
 
-  it('resolves the ISO date from a matching portfolio entry', () => {
-    expect(companyPresentationDateISO({ name: 'Evergreen Marine' }, PORTFOLIO_ENTRIES))
-      .toBe(`${CURRENT_YEAR}-07-16`);
+describe('chartRangeStartISO / slicePointsFrom', () => {
+  const today = new Date('2026-10-28T09:00:00Z');
+  it('computes each range start from today', () => {
+    expect(chartRangeStartISO('ytd', today)).toBe('2026-01-01');
+    expect(chartRangeStartISO('1m', today)).toBe('2026-09-28');
+    expect(chartRangeStartISO('6m', today)).toBe('2026-04-28');
+    expect(chartRangeStartISO('1y', today)).toBe('2025-10-28');
+    expect(chartRangeStartISO('5y', today)).toBe('2021-10-28');
   });
 
-  it('returns null when no portfolio entry matches the company name', () => {
-    expect(companyPresentationDateISO({ name: 'Unknown Co' }, PORTFOLIO_ENTRIES)).toBeNull();
-  });
-
-  it('returns null when the matching entry has an unparseable date', () => {
-    expect(companyPresentationDateISO({ name: 'Geely Automobile Holdings Ltd' }, PORTFOLIO_ENTRIES)).toBeNull();
-  });
-
-  it('returns null when given an empty portfolio entries list', () => {
-    expect(companyPresentationDateISO({ name: 'Evergreen Marine' }, [])).toBeNull();
+  it('keeps the last point before the start as the baseline', () => {
+    const pts = [{ date: '2025-12-30', close: 1 }, { date: '2025-12-31', close: 2 }, { date: '2026-01-02', close: 3 }];
+    expect(slicePointsFrom(pts, '2026-01-01').map(p => p.close)).toEqual([2, 3]);
+    expect(slicePointsFrom(pts, '2027-01-01')).toEqual([]);
   });
 });
 
@@ -58,12 +56,21 @@ describe('buildChartSVG (legacy design)', () => {
     const texts = [...svg.querySelectorAll('text')].map(t => t.textContent);
     expect(texts).toContain('130.00');
     expect(texts).toContain('100.00');
-    expect(texts).toContain('04-24');
-    expect(texts).toContain('07-23');
+    expect(texts).toContain('24/04');
+    expect(texts).toContain('23/07');
   });
 
   it('returns null for fewer than 2 points', () => {
     expect(buildChartSVG([{ date: '2026-04-24', close: 100 }])).toBeNull();
     expect(buildChartSVG([])).toBeNull();
+  });
+});
+
+describe('buildChartSVG multi-year axis', () => {
+  it('labels the x-axis month/year once the series spans more than a year', () => {
+    const pts = [{ date: '2021-10-28', close: 1 }, { date: '2026-10-28', close: 2 }];
+    const texts = Array.from(buildChartSVG(pts).querySelectorAll('text')).map(t => t.textContent);
+    expect(texts).toContain('10/21');
+    expect(texts).toContain('10/26');
   });
 });

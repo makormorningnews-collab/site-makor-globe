@@ -21,6 +21,45 @@
   color: var(--text);
 }
 
+/* LONG / SHORT badge, top right of the card (see buildPositionEl). The name
+   grows so the 📈 / ⚖ buttons and the badge sit together on the right. */
+.panel-company-header .panel-company-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.panel-company-position {
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  padding: 4px 8px;
+}
+
+.panel-company-position:empty {
+  display: none;
+}
+
+.panel-company-position.long {
+  background: #1c8a4b;
+  color: #ffffff;
+}
+
+.panel-company-position.short {
+  background: #c0392b;
+  color: #ffffff;
+}
+
+.panel-company-position-select {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
 .panel-compare-toggle {
   background: transparent;
   border: 1px solid rgba(74, 58, 130, 0.4);

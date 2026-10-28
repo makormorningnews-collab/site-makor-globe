@@ -10,7 +10,7 @@ function makeElements() {
   };
 }
 
-const CURRENT_YEAR = new Date().getFullYear();
+const NOW = () => new Date('2026-07-24T12:00:00Z');
 const COMPANY = { name: 'Evergreen Marine', yahooSymbol: '2603.TW' };
 const PORTFOLIO_ENTRIES = [{ entreprise: 'Evergreen Marine', date: '16/07' }];
 
@@ -18,7 +18,7 @@ describe('initCompanyChartModal', () => {
   it('opens the modal and sets the title immediately, before the fetch resolves', async () => {
     const { modalEl, titleEl, bodyEl } = makeElements();
     const fetchQuoteHistoryFn = vi.fn(() => new Promise(() => {})); // never resolves
-    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn });
+    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn, now: NOW });
     modal.open(COMPANY, PORTFOLIO_ENTRIES);
     expect(modalEl.classList.contains('open')).toBe(true);
     expect(titleEl.textContent).toBe('Evergreen Marine');
@@ -29,16 +29,16 @@ describe('initCompanyChartModal', () => {
     const fetchQuoteHistoryFn = vi.fn().mockResolvedValue({
       points: [{ date: '2026-07-16', close: 6.2 }, { date: '2026-07-17', close: 6.5 }],
     });
-    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn });
+    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn, now: NOW });
     await modal.open(COMPANY, PORTFOLIO_ENTRIES);
     expect(bodyEl.querySelector('svg')).not.toBeNull();
-    expect(fetchQuoteHistoryFn).toHaveBeenCalledWith('2603.TW', `${CURRENT_YEAR}-07-16`);
+    expect(fetchQuoteHistoryFn).toHaveBeenCalledWith('2603.TW', '2021-07-24'); // 5 years, sliced client-side per range
   });
 
-  it('shows a message instead of calling fetch when the company has no resolvable symbol/date', async () => {
+  it('shows a message instead of calling fetch when the company has no resolvable symbol', async () => {
     const { modalEl, titleEl, bodyEl } = makeElements();
     const fetchQuoteHistoryFn = vi.fn();
-    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn });
+    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn, now: NOW });
     await modal.open({ name: 'No Symbol Co' }, PORTFOLIO_ENTRIES);
     expect(fetchQuoteHistoryFn).not.toHaveBeenCalled();
     expect(bodyEl.textContent.length).toBeGreaterThan(0);
@@ -48,7 +48,7 @@ describe('initCompanyChartModal', () => {
   it('shows a message when the fetch resolves with no usable data', async () => {
     const { modalEl, titleEl, bodyEl } = makeElements();
     const fetchQuoteHistoryFn = vi.fn().mockResolvedValue(null);
-    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn });
+    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn, now: NOW });
     await modal.open(COMPANY, PORTFOLIO_ENTRIES);
     expect(bodyEl.textContent.length).toBeGreaterThan(0);
     expect(bodyEl.querySelector('svg')).toBeNull();
@@ -59,7 +59,7 @@ describe('initCompanyChartModal', () => {
     const fetchQuoteHistoryFn = vi.fn().mockResolvedValue({
       points: [{ date: '2026-07-16', close: 6.2 }, { date: '2026-07-17', close: 6.5 }],
     });
-    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn });
+    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn, now: NOW });
     await modal.open(COMPANY, PORTFOLIO_ENTRIES);
     modal.close();
     expect(modalEl.classList.contains('open')).toBe(false);
@@ -68,21 +68,47 @@ describe('initCompanyChartModal', () => {
 
   it('never interprets the company name as HTML', async () => {
     const { modalEl, titleEl, bodyEl } = makeElements();
-    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn: vi.fn() });
+    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn: vi.fn(), now: NOW });
     await modal.open({ name: '<img src=x onerror=alert(1)>' }, []);
     expect(titleEl.textContent).toBe('<img src=x onerror=alert(1)>');
     expect(titleEl.querySelector('img')).toBeNull();
   });
 
-  it('shows the presentation date and symbol as a subtitle', async () => {
+  it('falls back to the linked portfolio row symbol, and needs no presentation date', async () => {
+    const { modalEl, titleEl, bodyEl } = makeElements();
+    const fetchQuoteHistoryFn = vi.fn().mockResolvedValue({ points: [{ date: '2026-04-24', close: 1 }, { date: '2026-07-23', close: 2 }] });
+    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn, now: NOW });
+    await modal.open({ name: 'NKT A/S' }, [{ entreprise: 'NKT A/S', symbol: 'NKT.CO', date: '' }]);
+    expect(fetchQuoteHistoryFn).toHaveBeenCalledWith('NKT.CO', '2021-07-24');
+    expect(bodyEl.querySelector('svg')).not.toBeNull();
+  });
+
+  it('defaults to YTD and recomputes the change when another range is picked', async () => {
+    const { modalEl, titleEl, bodyEl } = makeElements();
+    const fetchQuoteHistoryFn = vi.fn().mockResolvedValue({
+      points: [
+        { date: '2024-07-25', close: 50 }, { date: '2025-12-31', close: 80 },
+        { date: '2026-01-02', close: 90 }, { date: '2026-07-23', close: 100 },
+      ],
+    });
+    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn, now: NOW });
+    await modal.open(COMPANY, PORTFOLIO_ENTRIES);
+    expect(bodyEl.querySelector('.chart-range-btn.active').textContent).toBe('YTD');
+    expect(bodyEl.querySelector('.chart-price-change').textContent).toBe('+25.00% depuis le 1er janvier'); // from the 2025 last close
+    bodyEl.querySelector('.chart-range-btn[data-range="5y"]').click();
+    expect(bodyEl.querySelector('.chart-range-btn.active').textContent).toBe('5A');
+    expect(bodyEl.querySelector('.chart-price-change').textContent).toBe('+100.00% sur 5 ans');
+    expect(fetchQuoteHistoryFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the symbol as a subtitle', async () => {
     const { modalEl, titleEl, bodyEl } = makeElements();
     const fetchQuoteHistoryFn = vi.fn().mockResolvedValue({
       points: [{ date: '2026-04-24', close: 6.2 }, { date: '2026-07-23', close: 6.5 }],
     });
-    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn });
+    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn, now: NOW });
     await modal.open(COMPANY, PORTFOLIO_ENTRIES);
     expect(bodyEl.querySelector('.chart-modal-sub').textContent).toContain('2603.TW');
-    expect(bodyEl.querySelector('.chart-modal-sub').textContent).toContain('Évolution depuis la présentation');
   });
 
   it('shows the current price and a green percentage for a rising series', async () => {
@@ -90,7 +116,7 @@ describe('initCompanyChartModal', () => {
     const fetchQuoteHistoryFn = vi.fn().mockResolvedValue({
       points: [{ date: '2026-04-24', close: 100 }, { date: '2026-07-23', close: 110 }],
     });
-    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn });
+    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn, now: NOW });
     await modal.open(COMPANY, PORTFOLIO_ENTRIES);
     expect(bodyEl.querySelector('.chart-price').textContent).toBe('110.00');
     const change = bodyEl.querySelector('.chart-price-change');
@@ -103,7 +129,7 @@ describe('initCompanyChartModal', () => {
     const fetchQuoteHistoryFn = vi.fn().mockResolvedValue({
       points: [{ date: '2026-04-24', close: 100 }, { date: '2026-07-23', close: 90 }],
     });
-    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn });
+    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn, now: NOW });
     await modal.open(COMPANY, PORTFOLIO_ENTRIES);
     expect(bodyEl.querySelector('.chart-price-change').classList.contains('negative')).toBe(true);
   });
@@ -114,7 +140,7 @@ describe('initCompanyChartModal', () => {
     const fetchQuoteHistoryFn = vi.fn()
       .mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }))
       .mockResolvedValueOnce({ points: [{ date: '2026-04-24', close: 50 }, { date: '2026-07-23', close: 60 }] });
-    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn });
+    const modal = initCompanyChartModal({ modalEl, titleEl, bodyEl, fetchQuoteHistoryFn, now: NOW });
 
     const firstOpen = modal.open(COMPANY, PORTFOLIO_ENTRIES); // starts, does not resolve yet
     await modal.open({ name: 'Second Co', yahooSymbol: 'SEC' }, [{ entreprise: 'Second Co', date: '16/07' }]); // resolves and renders fully
